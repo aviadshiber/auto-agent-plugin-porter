@@ -24,7 +24,7 @@ pub struct SyncOptions {
 
 /// What a sync run did, bucketed. Per-skill failures land in `errors` and do
 /// not abort the run — a session-start hook must be resilient to one bad skill.
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct SyncReport {
     pub created: Vec<String>,
     pub updated: Vec<String>,
@@ -59,6 +59,31 @@ impl SyncReport {
     }
 }
 
+/// Resolve `path` to an absolute, symlink-free form for containment checks,
+/// tolerating a not-yet-existing tail: canonicalize the longest existing
+/// prefix, then re-append the remaining components. Falls back to the input on
+/// total failure (e.g. no existing ancestor).
+fn resolve_for_containment(path: &Path) -> PathBuf {
+    let mut acc: Vec<std::ffi::OsString> = Vec::new();
+    let mut cur = path.to_path_buf();
+    loop {
+        if let Ok(c) = fs::canonicalize(&cur) {
+            let mut out = c;
+            for comp in acc.iter().rev() {
+                out.push(comp);
+            }
+            return out;
+        }
+        match (cur.file_name(), cur.parent()) {
+            (Some(name), Some(parent)) => {
+                acc.push(name.to_os_string());
+                cur = parent.to_path_buf();
+            }
+            _ => return path.to_path_buf(),
+        }
+    }
+}
+
 /// Run one source → target sync.
 pub fn sync(opts: &SyncOptions) -> crate::Result<SyncReport> {
     let mut report = SyncReport::default();
@@ -67,6 +92,23 @@ pub fn sync(opts: &SyncOptions) -> crate::Result<SyncReport> {
 
     if !src_skills.is_dir() {
         return Ok(report); // no source skills → nothing to port
+    }
+
+    // Refuse overlapping source/target trees BEFORE any write. If the target
+    // skills dir were equal to, or nested inside, the source (or vice versa) —
+    // reachable via misconfigured CLI/env overrides — write_mirror would create
+    // a destination the copy walk then recurses into, self-copying until disk
+    // or path limits are hit, and mutating the source tree in the process.
+    let cs = resolve_for_containment(&src_skills);
+    let cd = resolve_for_containment(&dst_skills);
+    if cs == cd || cs.starts_with(&cd) || cd.starts_with(&cs) {
+        return Err(format!(
+            "source and target skills directories overlap (source={}, target={}); \
+             they must be entirely separate",
+            src_skills.display(),
+            dst_skills.display()
+        )
+        .into());
     }
 
     let mut entries: Vec<PathBuf> = fs::read_dir(&src_skills)?
@@ -242,45 +284,97 @@ fn write_mirror(
     mirror_name: &str,
     dst_skill: &Path,
 ) -> crate::Result<()> {
-    // Rebuild from scratch so stale files from a previous port cannot linger.
-    // We only reach here for a target we own (marker checked) or a fresh dir.
-    if dst_skill.exists() {
-        // Defense-in-depth (CWE-59): never follow a symlink — only replace a
-        // real directory. remove_dir_all on a symlinked dir could act outside
-        // the skills tree if an attacker pre-planted a marked symlink.
-        if fs::symlink_metadata(dst_skill)?.file_type().is_symlink() {
-            return Err(format!(
-                "refusing to replace symlinked target: {}",
-                dst_skill.display()
-            )
-            .into());
-        }
-        fs::remove_dir_all(dst_skill)?;
+    // Defense-in-depth (CWE-59): never follow a symlink — only replace a real
+    // directory. A symlinked target could redirect the swap outside the tree.
+    if dst_skill.exists() && fs::symlink_metadata(dst_skill)?.file_type().is_symlink() {
+        return Err(format!(
+            "refusing to replace symlinked target: {}",
+            dst_skill.display()
+        )
+        .into());
     }
-    fs::create_dir_all(dst_skill)?;
 
-    // Copy every source file verbatim EXCEPT the two we regenerate per target.
-    copy_tree_except(src_skill, src_skill, dst_skill)?;
-
-    let fm = frontmatter::build_mirror_frontmatter(
+    // Transactional replace so a failure mid-write can never strand a corrupted
+    // mirror (which a later run would misread as a user conflict or as
+    // "unchanged"): build the COMPLETE mirror in a sibling staging dir, validate
+    // its required outputs, then swap it into place while preserving the old
+    // mirror until the rename commits. `.`-prefixed staging/backup names are
+    // skipped by dir_skill_name and prune, so they are never treated as skills.
+    let parent = dst_skill
+        .parent()
+        .ok_or_else(|| format!("mirror path has no parent: {}", dst_skill.display()))?;
+    // process id makes the staging name unique across concurrent porter runs.
+    let tag = format!(".{}.porter-staging.{}", mirror_name, std::process::id());
+    let staging = parent.join(&tag);
+    let backup = parent.join(format!(
+        ".{}.porter-old.{}",
         mirror_name,
-        description,
-        opts.target,
-        implicit_allowed,
-        allowed_tools,
-        opts.source,
-        source_name,
-        source_hash,
-    );
-    fs::write(dst_skill.join("SKILL.md"), frontmatter::render(&fm, body)?)?;
+        std::process::id()
+    ));
 
-    if opts.target == Agent::Codex {
-        let agents_dir = dst_skill.join("agents");
-        fs::create_dir_all(&agents_dir)?;
-        let oy = frontmatter::build_openai_yaml(mirror_name, description, implicit_allowed)?;
-        fs::write(agents_dir.join("openai.yaml"), oy)?;
+    // Best-effort cleanup of a leftover staging dir from a prior crash.
+    let _ = fs::remove_dir_all(&staging);
+    fs::create_dir_all(&staging)?;
+
+    // Build fully into staging; on ANY error, remove staging and bail with the
+    // real mirror untouched.
+    let build = (|| -> crate::Result<()> {
+        copy_tree_except(src_skill, src_skill, &staging)?;
+        let fm = frontmatter::build_mirror_frontmatter(
+            mirror_name,
+            description,
+            opts.target,
+            implicit_allowed,
+            allowed_tools,
+            opts.source,
+            source_name,
+            source_hash,
+        );
+        fs::write(staging.join("SKILL.md"), frontmatter::render(&fm, body)?)?;
+        if opts.target == Agent::Codex {
+            let agents_dir = staging.join("agents");
+            fs::create_dir_all(&agents_dir)?;
+            let oy = frontmatter::build_openai_yaml(mirror_name, description, implicit_allowed)?;
+            fs::write(agents_dir.join("openai.yaml"), oy)?;
+        }
+        // Validate required outputs before we touch the live mirror.
+        if !staging.join("SKILL.md").is_file() {
+            return Err("staged mirror missing SKILL.md".into());
+        }
+        if opts.target == Agent::Codex && !staging.join("agents/openai.yaml").is_file() {
+            return Err("staged Codex mirror missing agents/openai.yaml".into());
+        }
+        Ok(())
+    })();
+    if let Err(e) = build {
+        let _ = fs::remove_dir_all(&staging);
+        return Err(e);
     }
-    Ok(())
+
+    // Commit: move any existing valid mirror aside, then rename staging into
+    // place. rename(2) into a now-absent target is atomic on the same
+    // filesystem. If the final rename fails, roll the old mirror back so we
+    // never leave the target missing.
+    let had_old = dst_skill.exists();
+    if had_old {
+        let _ = fs::remove_dir_all(&backup);
+        fs::rename(dst_skill, &backup)?;
+    }
+    match fs::rename(&staging, dst_skill) {
+        Ok(()) => {
+            if had_old {
+                let _ = fs::remove_dir_all(&backup); // commit succeeded
+            }
+            Ok(())
+        }
+        Err(e) => {
+            if had_old {
+                let _ = fs::rename(&backup, dst_skill); // roll back
+            }
+            let _ = fs::remove_dir_all(&staging);
+            Err(format!("failed to install mirror {mirror_name}: {e}").into())
+        }
+    }
 }
 
 fn copy_tree_except(root: &Path, cur: &Path, dst_root: &Path) -> std::io::Result<()> {
@@ -294,6 +388,13 @@ fn copy_tree_except(root: &Path, cur: &Path, dst_root: &Path) -> std::io::Result
         };
         let rel_slash = rel_to_slash(rel);
         if rel_slash == "SKILL.md" || rel_slash == "agents/openai.yaml" {
+            continue;
+        }
+        // Defense-in-depth: never descend into the destination itself. The
+        // containment check in sync() already rejects overlapping trees, so
+        // this only fires under a pathological layout — but it guarantees the
+        // copy can never recurse into its own output.
+        if path == dst_root {
             continue;
         }
         if file_type.is_dir() {

@@ -44,35 +44,15 @@ function Get-PorterBin([string]$pluginRoot) {
         ($sha.ComputeHash($acc) | ForEach-Object { $_.ToString('x2') }) -join ''
     }
 
-    # Cheap staleness gate: a stat-only mtime check first (fast path), falling
-    # back to the full content hash only when a crate file is newer than the
-    # stamp — so the steady-state session pays ~a few stats, never a full read.
+    # Staleness decision — the stored CONTENT HASH is authoritative, never
+    # mtime (which can move backward on cache-restore/reinstall/downgrade and
+    # would then keep a stale binary). The crate is a small fixed fileset, so
+    # hashing it each session is cheap.
     $needBuild = $false
     if (-not (Test-Path $bin) -or -not (Test-Path $stamp)) {
         $needBuild = $true
-    } else {
-        $stampTime = (Get-Item $stamp).LastWriteTimeUtc
-        $files = @()
-        foreach ($f in @('Cargo.toml', 'Cargo.lock')) {
-            $p = Join-Path $crateDir $f
-            if (Test-Path $p) { $files += $p }
-        }
-        $srcDir = Join-Path $crateDir 'src'
-        if (Test-Path $srcDir) {
-            $files += (Get-ChildItem -Recurse -File $srcDir | ForEach-Object { $_.FullName })
-        }
-        $newer = $false
-        foreach ($p in $files) {
-            if ((Get-Item $p).LastWriteTimeUtc -gt $stampTime) { $newer = $true; break }
-        }
-        if ($newer) {
-            if ((Get-Content -Raw $stamp).Trim() -ne (Get-SrcHash)) {
-                $needBuild = $true
-            } else {
-                # Touched but content-identical → reset the mtime baseline.
-                (Get-Item $stamp).LastWriteTime = Get-Date
-            }
-        }
+    } elseif ((Get-Content -Raw $stamp).Trim() -ne (Get-SrcHash)) {
+        $needBuild = $true
     }
 
     if ($needBuild) {

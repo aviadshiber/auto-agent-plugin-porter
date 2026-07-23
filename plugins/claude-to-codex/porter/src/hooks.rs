@@ -127,9 +127,46 @@ pub fn install_codex_session_hook(opts: &InstallOptions) -> crate::Result<Instal
         }
         let mut text = serde_json::to_string_pretty(&root)?;
         text.push('\n');
-        fs::write(&hooks_path, text)?;
+        write_atomic(&hooks_path, &text)?;
     }
     Ok(outcome)
+}
+
+/// Crash-safe write: keep a one-generation backup of the previous file, write
+/// the new content to a sibling temp file, fsync it, then atomically rename it
+/// over the target. A crash/full-disk can then only leave the intact original,
+/// the intact backup, or a stray `.tmp` — never a truncated `hooks.json`. The
+/// backup gives the user a recoverable copy if a later concurrent writer (rare;
+/// this runs only at one-time bootstrap) races us.
+fn write_atomic(path: &Path, contents: &str) -> crate::Result<()> {
+    use std::io::Write;
+
+    let dir = path
+        .parent()
+        .ok_or_else(|| format!("path has no parent: {}", path.display()))?;
+    let file_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| format!("path has no file name: {}", path.display()))?;
+
+    // Preserve a recoverable backup of the current file before replacing it.
+    if path.exists() {
+        let backup = dir.join(format!("{file_name}.bak"));
+        let _ = fs::copy(path, &backup);
+    }
+
+    let tmp = dir.join(format!(".{file_name}.tmp.{}", std::process::id()));
+    {
+        let mut f = fs::File::create(&tmp)?;
+        f.write_all(contents.as_bytes())?;
+        f.sync_all()?; // durable on disk before the rename
+    }
+    // Atomic replace on the same filesystem.
+    if let Err(e) = fs::rename(&tmp, path) {
+        let _ = fs::remove_file(&tmp);
+        return Err(e.into());
+    }
+    Ok(())
 }
 
 /// Load `path` as a JSON object, or return an empty object when the file is
@@ -237,6 +274,36 @@ mod tests {
         });
         assert!(r.is_err());
         assert!(!dir.path().join("hooks.json").exists());
+    }
+
+    #[test]
+    fn overwriting_keeps_a_backup_and_valid_json() {
+        let dir = tempfile::tempdir().unwrap();
+        // Seed an existing hooks.json with an unrelated hook.
+        fs::write(
+            dir.path().join("hooks.json"),
+            r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/usr/bin/x"}]}]}}"#,
+        )
+        .unwrap();
+        install(dir.path(), "/opt/agent-porter");
+
+        // A recoverable backup of the pre-write file exists...
+        let bak = dir.path().join("hooks.json.bak");
+        assert!(bak.exists(), "expected a .bak backup");
+        assert!(fs::read_to_string(&bak).unwrap().contains("/usr/bin/x"));
+
+        // ...and the live file is complete, valid JSON with both hooks.
+        let text = fs::read_to_string(dir.path().join("hooks.json")).unwrap();
+        let v: Value = serde_json::from_str(&text).expect("hooks.json must be valid JSON");
+        assert!(v.get("hooks").and_then(|h| h.get("Stop")).is_some());
+        assert!(v.get("hooks").and_then(|h| h.get("SessionStart")).is_some());
+        // No stray temp file left behind.
+        let strays: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp."))
+            .collect();
+        assert!(strays.is_empty(), "temp file left behind: {strays:?}");
     }
 
     #[test]

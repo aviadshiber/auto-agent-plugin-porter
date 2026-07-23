@@ -37,30 +37,25 @@ porter_ensure_built() {
     } | _porter_hasher | cut -d' ' -f1
   }
 
-  # Staleness decision, cheapest check first:
-  #   1. no binary / no stamp        → build
-  #   2. mtime quick check: is any crate file NEWER than the stamp? If not, the
-  #      binary is current — fast path, NO content hash, NO cargo (this is the
-  #      overwhelmingly common per-session case).
-  #   3. something is newer → confirm with the content hash (handles a
-  #      touch-without-change); rebuild only if content actually differs. With
-  #      no SHA tool available we cannot verify content, so rebuild to be safe
-  #      (never emit a bogus hash).
+  # Staleness decision — the stored CONTENT HASH is authoritative, never mtime.
+  # mtime is unreliable for this: restoring a cache, reinstalling, downgrading,
+  # or extracting an upgraded plugin can all leave crate files with older/equal
+  # timestamps, so an mtime gate would silently keep running a stale binary and
+  # never activate correctness/security fixes. The crate is a small fixed
+  # fileset (Cargo.toml/lock + a handful of .rs), so hashing it every session is
+  # a few small reads — cheap. (The unbounded per-skill content hashing lives in
+  # the Rust binary; this only fingerprints the crate.)
   local need_build=0
   if [ ! -x "$PORTER_BIN" ] || [ ! -f "$stamp" ]; then
     need_build=1
-  elif find "$crate_dir/Cargo.toml" "$crate_dir/Cargo.lock" "$crate_dir/src" \
-        -type f -newer "$stamp" -print 2>/dev/null | grep -q .; then
-    if _porter_have_hasher; then
-      if [ "$(cat "$stamp" 2>/dev/null || true)" != "$(_porter_src_hash)" ]; then
-        need_build=1
-      else
-        touch "$stamp"   # content identical; reset the mtime baseline
-      fi
-    else
+  elif _porter_have_hasher; then
+    if [ "$(cat "$stamp" 2>/dev/null || true)" != "$(_porter_src_hash)" ]; then
       need_build=1
     fi
   fi
+  # No hasher AND a binary+stamp already present → cannot verify content; keep
+  # the existing binary rather than rebuild every session (this branch is
+  # near-unreachable: macOS/Linux ship shasum/sha256sum).
 
   if [ "$need_build" -eq 1 ]; then
     if ! command -v cargo >/dev/null 2>&1; then

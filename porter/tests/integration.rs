@@ -204,6 +204,122 @@ fn missing_source_skills_dir_is_a_noop() {
 }
 
 #[test]
+fn rejects_overlapping_source_and_target_dirs() {
+    // Target config dir sits INSIDE the source's skills tree, so the target's
+    // own skills dir (`.../skills/inner/skills`) is nested under the source
+    // skills dir (`.../skills`). sync() must refuse before writing anything
+    // (no recursive self-copy / disk exhaustion).
+    let src = tempfile::tempdir().unwrap();
+    make_skill(
+        src.path(),
+        "foo",
+        "name: foo\ndescription: d",
+        "body\n",
+        &[],
+    );
+    // target_dir inside src/skills → dst_skills = src/skills/inner/skills.
+    let nested_target = src.path().join("skills").join("inner");
+    std::fs::create_dir_all(&nested_target).unwrap();
+
+    let err = sync(&opts(
+        Agent::Codex,
+        Agent::Claude,
+        src.path(),
+        &nested_target,
+    ))
+    .unwrap_err();
+    assert!(err.to_string().contains("overlap"), "got: {err}");
+    // Source must be untouched — no mirror written into it.
+    assert!(!nested_target.join("skills/codex-foo").exists());
+}
+
+#[test]
+fn rejects_identical_source_and_target_dirs() {
+    let dir = tempfile::tempdir().unwrap();
+    make_skill(
+        dir.path(),
+        "foo",
+        "name: foo\ndescription: d",
+        "body\n",
+        &[],
+    );
+    let err = sync(&opts(Agent::Codex, Agent::Claude, dir.path(), dir.path())).unwrap_err();
+    assert!(err.to_string().contains("overlap"), "got: {err}");
+}
+
+#[test]
+fn successful_sync_leaves_no_temp_dirs() {
+    // The transactional write must clean up its staging/backup dirs on success,
+    // on both create and update, leaving only the mirror.
+    let src = tempfile::tempdir().unwrap();
+    let dst = tempfile::tempdir().unwrap();
+    make_skill(
+        src.path(),
+        "foo",
+        "name: foo\ndescription: d",
+        "body\n",
+        &[],
+    );
+    sync(&opts(Agent::Codex, Agent::Claude, src.path(), dst.path())).unwrap();
+    // Change source and re-sync to exercise the replace (old moved aside) path.
+    std::fs::write(
+        src.path().join("skills/foo/SKILL.md"),
+        "---\nname: foo\ndescription: d2\n---\nnew\n",
+    )
+    .unwrap();
+    sync(&opts(Agent::Codex, Agent::Claude, src.path(), dst.path())).unwrap();
+
+    let entries: Vec<String> = std::fs::read_dir(dst.path().join("skills"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        entries,
+        vec!["codex-foo".to_string()],
+        "no staging/backup left behind"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn refuses_to_replace_symlinked_target() {
+    use std::os::unix::fs::symlink;
+    let src = tempfile::tempdir().unwrap();
+    let dst = tempfile::tempdir().unwrap();
+    make_skill(
+        src.path(),
+        "foo",
+        "name: foo\ndescription: d",
+        "body\n",
+        &[],
+    );
+
+    // Pre-plant a symlink at the mirror path pointing elsewhere, carrying a
+    // forged marker so it isn't treated as a user conflict.
+    let elsewhere = tempfile::tempdir().unwrap();
+    make_skill(
+        elsewhere.path(),
+        "target",
+        "name: target\ndescription: d\nmetadata:\n  ported_by: auto-agent-plugin-porter\n  source_agent: codex\n  source_name: foo\n  source_hash: stale\n  porter_version: 0.0.0",
+        "b\n",
+        &[],
+    );
+    std::fs::create_dir_all(dst.path().join("skills")).unwrap();
+    symlink(
+        elsewhere.path().join("skills/target"),
+        dst.path().join("skills/codex-foo"),
+    )
+    .unwrap();
+
+    let report = sync(&opts(Agent::Codex, Agent::Claude, src.path(), dst.path())).unwrap();
+    assert!(
+        report.errors.iter().any(|e| e.contains("symlink")),
+        "expected a symlink-refusal error, got: {:?}",
+        report.errors
+    );
+}
+
+#[test]
 fn codex_openai_yaml_policy_translates_to_claude_disable() {
     // Reverse of claude_to_codex_emits_openai_yaml_with_policy: a Codex source
     // whose agents/openai.yaml disables implicit invocation must produce a

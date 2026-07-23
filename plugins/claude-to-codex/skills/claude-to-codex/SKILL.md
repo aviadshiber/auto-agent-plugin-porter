@@ -46,9 +46,10 @@ bash "$BOOT"
 For each user skill in Claude (`$CLAUDE_CONFIG_DIR/skills/<name>/`, default
 `~/.claude`), it writes a mirror into your Codex skills directory
 (`$CODEX_HOME/skills`, default `~/.codex`) as `claude-<name>/` — the whole skill
-directory, with the frontmatter translated to Codex's dialect and an
-`agents/openai.yaml` generated
-(Claude's `disable-model-invocation` becomes `policy.allow_implicit_invocation`).
+directory, with the frontmatter translated to Codex's dialect. An optional
+`agents/openai.yaml` is generated only when needed to preserve a non-default
+invocation policy (Claude's `disable-model-invocation` becomes
+`policy.allow_implicit_invocation: false`).
 
 The sync is one-way (Claude → Codex), **hash-gated** (only changed skills are
 rewritten), **loop-safe** (mirrors carry a `metadata.ported_by` marker and are

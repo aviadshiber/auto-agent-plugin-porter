@@ -30,6 +30,36 @@ pub fn hash_dir(dir: &Path) -> std::io::Result<String> {
     Ok(hex(&hasher.finalize()))
 }
 
+/// Deterministic SHA-256 of the effective mirror inputs.
+///
+/// `parts` contains the translated SKILL.md inputs (body, budgeted description,
+/// policy, identity). Files copied verbatim are hashed from `dir`; source
+/// `SKILL.md` and `agents/openai.yaml` are excluded because the porter
+/// translates them rather than copying them. This lets a source edit that is
+/// outside a truncated description's visible prefix remain a true no-op while
+/// still detecting every change that affects generated output.
+pub fn hash_render_plan(dir: &Path, parts: &[&str]) -> std::io::Result<String> {
+    let mut hasher = Sha256::new();
+    hasher.update(b"agent-porter-render-plan-v1");
+    for part in parts {
+        hasher.update((part.len() as u64).to_le_bytes());
+        hasher.update(part.as_bytes());
+    }
+
+    let mut rels = Vec::new();
+    collect(dir, dir, &mut rels)?;
+    rels.retain(|rel| rel != "SKILL.md" && rel != "agents/openai.yaml");
+    rels.sort();
+    for rel in rels {
+        hasher.update((rel.len() as u64).to_le_bytes());
+        hasher.update(rel.as_bytes());
+        let bytes = fs::read(dir.join(&rel))?;
+        hasher.update((bytes.len() as u64).to_le_bytes());
+        hasher.update(bytes);
+    }
+    Ok(hex(&hasher.finalize()))
+}
+
 fn collect(root: &Path, cur: &Path, out: &mut Vec<String>) -> std::io::Result<()> {
     for entry in fs::read_dir(cur)? {
         let entry = entry?;
@@ -84,5 +114,36 @@ mod tests {
         // Change a referenced file → hash must change.
         fs::write(root.join("references/a.md"), "ref2").unwrap();
         assert_ne!(h1, hash_dir(root).unwrap());
+    }
+
+    #[test]
+    fn render_hash_tracks_effective_inputs_and_copied_files() {
+        let td = tempfile::tempdir().unwrap();
+        let root = td.path();
+        fs::write(root.join("SKILL.md"), "ignored source frontmatter").unwrap();
+        fs::write(root.join("reference.md"), "one").unwrap();
+
+        let h1 = hash_render_plan(root, &["body", "compact description"]).unwrap();
+        assert_eq!(
+            h1,
+            hash_render_plan(root, &["body", "compact description"]).unwrap()
+        );
+        assert_ne!(
+            h1,
+            hash_render_plan(root, &["body", "different description"]).unwrap()
+        );
+
+        // Raw SKILL.md is translated, so only its effective parts above matter.
+        fs::write(root.join("SKILL.md"), "different ignored frontmatter").unwrap();
+        assert_eq!(
+            h1,
+            hash_render_plan(root, &["body", "compact description"]).unwrap()
+        );
+
+        fs::write(root.join("reference.md"), "two").unwrap();
+        assert_ne!(
+            h1,
+            hash_render_plan(root, &["body", "compact description"]).unwrap()
+        );
     }
 }

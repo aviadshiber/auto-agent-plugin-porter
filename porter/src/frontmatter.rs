@@ -16,6 +16,7 @@ pub struct Marker {
     pub source_agent: String,
     pub source_name: String,
     pub source_hash: String,
+    pub render_hash: String,
     pub porter_version: String,
 }
 
@@ -63,6 +64,7 @@ pub fn marker(m: &Mapping) -> Option<Marker> {
         source_agent: get_str(meta, "source_agent").unwrap_or_default(),
         source_name: get_str(meta, "source_name").unwrap_or_default(),
         source_hash: get_str(meta, "source_hash").unwrap_or_default(),
+        render_hash: get_str(meta, "render_hash").unwrap_or_default(),
         porter_version: get_str(meta, "porter_version").unwrap_or_default(),
     })
 }
@@ -97,6 +99,7 @@ pub fn build_mirror_frontmatter(
     source_agent: Agent,
     source_name: &str,
     source_hash: &str,
+    render_hash: &str,
 ) -> Mapping {
     let mut fm = Mapping::new();
     fm.insert(key("name"), Value::String(mirror_name.to_string()));
@@ -126,6 +129,7 @@ pub fn build_mirror_frontmatter(
     );
     meta.insert(key("source_name"), Value::String(source_name.to_string()));
     meta.insert(key("source_hash"), Value::String(source_hash.to_string()));
+    meta.insert(key("render_hash"), Value::String(render_hash.to_string()));
     fm.insert(key("metadata"), Value::Mapping(meta));
 
     fm
@@ -195,12 +199,14 @@ mod tests {
             Agent::Codex,
             "foo",
             "abc123",
+            "render123",
         );
         assert!(is_ported(&fm));
         let mk = marker(&fm).unwrap();
         assert_eq!(mk.source_agent, "codex");
         assert_eq!(mk.source_name, "foo");
         assert_eq!(mk.source_hash, "abc123");
+        assert_eq!(mk.render_hash, "render123");
     }
 
     #[test]
@@ -214,6 +220,7 @@ mod tests {
             Agent::Codex,
             "foo",
             "h",
+            "r",
         );
         assert_eq!(get_bool(&fm, "disable-model-invocation"), Some(true));
     }
@@ -229,6 +236,7 @@ mod tests {
             Agent::Claude,
             "foo",
             "h",
+            "r",
         );
         assert_eq!(get_bool(&fm, "disable-model-invocation"), None);
     }

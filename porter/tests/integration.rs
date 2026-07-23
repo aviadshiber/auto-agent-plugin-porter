@@ -1,6 +1,7 @@
 //! End-to-end sync tests over real temp directories.
 
 use agent_porter::agent::Agent;
+use agent_porter::frontmatter;
 use agent_porter::sync::{sync, SyncOptions};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -35,6 +36,12 @@ fn opts(source: Agent, target: Agent, sdir: &Path, tdir: &Path) -> SyncOptions {
 
 fn read(p: PathBuf) -> String {
     fs::read_to_string(p).unwrap()
+}
+
+fn mirror_frontmatter(path: &Path) -> serde_yaml::Mapping {
+    let text = read(path.join("SKILL.md"));
+    let (yaml, _) = frontmatter::split(&text).unwrap();
+    frontmatter::parse_mapping(yaml).unwrap()
 }
 
 #[test]
@@ -227,12 +234,14 @@ fn claude_to_codex_large_corpus_emits_sparse_policy_metadata() {
 
     for index in 0..SKILL_COUNT {
         let name = format!("skill-{index:02}");
+        let routing = format!(
+            "Use this corpus skill for workflow {index}. {}",
+            "Detailed routing context and trigger guidance. ".repeat(12)
+        );
         let frontmatter = if index % POLICY_STRIDE == 0 {
-            format!(
-                "name: {name}\ndescription: Manual-only corpus skill {index}\ndisable-model-invocation: true"
-            )
+            format!("name: {name}\ndescription: {routing}\ndisable-model-invocation: true")
         } else {
-            format!("name: {name}\ndescription: Ordinary corpus skill {index}")
+            format!("name: {name}\ndescription: {routing}")
         };
         make_skill(src.path(), &name, &frontmatter, "body\n", &[]);
     }
@@ -246,6 +255,7 @@ fn claude_to_codex_large_corpus_emits_sparse_policy_metadata() {
     );
 
     let mut metadata_count = 0;
+    let mut description_chars = 0;
     for index in 0..SKILL_COUNT {
         let mirror = dst
             .path()
@@ -255,11 +265,114 @@ fn claude_to_codex_large_corpus_emits_sparse_policy_metadata() {
             mirror.join("SKILL.md").is_file(),
             "missing mirror for corpus skill {index}"
         );
+        let fm = mirror_frontmatter(&mirror);
+        let description = frontmatter::get_str(&fm, "description").unwrap();
+        assert!(
+            !description.is_empty(),
+            "routing description must remain non-empty"
+        );
+        description_chars += description.chars().count();
         if mirror.join("agents/openai.yaml").is_file() {
             metadata_count += 1;
         }
     }
     assert_eq!(metadata_count, SKILL_COUNT / POLICY_STRIDE);
+    assert!(
+        description_chars <= 8_000,
+        "generated descriptions exceeded aggregate budget: {description_chars}"
+    );
+    let notice = report.description_compaction_notice().unwrap();
+    assert!(notice.contains("compacted 64 Codex skill descriptions"));
+    assert!(notice.contains("skills-context budget"));
+    let compaction = report.description_compaction.as_ref().unwrap();
+    assert_eq!(compaction.shortened_count, SKILL_COUNT);
+    assert!(compaction.original_chars > compaction.rendered_chars);
+    assert_eq!(compaction.rendered_chars, description_chars);
+}
+
+#[test]
+fn codex_description_budget_changes_participate_in_render_hash() {
+    let src = tempfile::tempdir().unwrap();
+    let dst = tempfile::tempdir().unwrap();
+    let long_description = "routing ".repeat(900);
+
+    for name in ["alpha", "beta"] {
+        make_skill(
+            src.path(),
+            name,
+            &format!("name: {name}\ndescription: {long_description}"),
+            "body\n",
+            &[],
+        );
+    }
+
+    let first = sync(&opts(Agent::Claude, Agent::Codex, src.path(), dst.path())).unwrap();
+    assert_eq!(first.created.len(), 2);
+    let alpha_before = mirror_frontmatter(&dst.path().join("skills/claude-alpha"));
+    let marker_before = frontmatter::marker(&alpha_before).unwrap();
+    let description_before = frontmatter::get_str(&alpha_before, "description").unwrap();
+
+    // A sibling skill changes alpha's fair share without changing alpha's
+    // source directory. The render hash must therefore force alpha to update
+    // while its source hash remains stable.
+    make_skill(
+        src.path(),
+        "gamma",
+        &format!("name: gamma\ndescription: {long_description}"),
+        "body\n",
+        &[],
+    );
+    let second = sync(&opts(Agent::Claude, Agent::Codex, src.path(), dst.path())).unwrap();
+    assert_eq!(second.created, vec!["claude-gamma".to_string()]);
+    assert_eq!(
+        second.updated,
+        vec!["claude-alpha".to_string(), "claude-beta".to_string()]
+    );
+
+    let alpha_after = mirror_frontmatter(&dst.path().join("skills/claude-alpha"));
+    let marker_after = frontmatter::marker(&alpha_after).unwrap();
+    let description_after = frontmatter::get_str(&alpha_after, "description").unwrap();
+    assert_eq!(marker_before.source_hash, marker_after.source_hash);
+    assert_ne!(marker_before.render_hash, marker_after.render_hash);
+    assert!(description_after.chars().count() < description_before.chars().count());
+}
+
+#[test]
+fn changes_beyond_compacted_description_are_hash_noop() {
+    let src = tempfile::tempdir().unwrap();
+    let dst = tempfile::tempdir().unwrap();
+    let original = "routing ".repeat(900);
+
+    for name in ["alpha", "beta"] {
+        make_skill(
+            src.path(),
+            name,
+            &format!("name: {name}\ndescription: {original}"),
+            "body\n",
+            &[],
+        );
+    }
+    sync(&opts(Agent::Claude, Agent::Codex, src.path(), dst.path())).unwrap();
+
+    // Keep alpha's allocated prefix and output body identical, but alter source
+    // description text well beyond the 4,000-character fair share.
+    let changed_tail = format!("{}changed ", "routing ".repeat(899));
+    fs::write(
+        src.path().join("skills/alpha/SKILL.md"),
+        format!("---\nname: alpha\ndescription: {changed_tail}\n---\nbody\n"),
+    )
+    .unwrap();
+
+    let report = sync(&opts(Agent::Claude, Agent::Codex, src.path(), dst.path())).unwrap();
+    assert_eq!(
+        report.unchanged,
+        vec!["claude-alpha".to_string(), "claude-beta".to_string()]
+    );
+    assert!(report.created.is_empty() && report.updated.is_empty());
+    assert!(
+        report.description_compaction_notice().is_none(),
+        "an effective no-op must not warn or rewrite"
+    );
 }
 
 #[test]

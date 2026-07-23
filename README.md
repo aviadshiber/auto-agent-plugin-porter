@@ -58,14 +58,20 @@ dialect (Claude `disable-model-invocation` ⇄ Codex
 `agents/openai.yaml: policy.allow_implicit_invocation`) and copying the rest of
 the skill directory verbatim. Codex metadata is sparse by design: ordinary
 skills need only `SKILL.md`; `agents/openai.yaml` is emitted only when it must
-carry a non-default invocation policy.
+carry a non-default invocation policy. Generated Codex descriptions share an
+8,000-character budget, distributed fairly across the mirrored corpus, so a
+large Claude skill collection does not overwhelm Codex's 2% skills-context
+budget.
 
 The sync is safe by construction:
 
 - **One-way & generated.** The mirror is a build artifact — never hand-edit it;
   edit the source skill and let the next session re-sync.
-- **Hash-gated.** A skill is rewritten only when its source content changes, so
-  the steady-state session-start cost is negligible.
+- **Hash-gated.** A skill is rewritten only when its effective generated output
+  changes. The render hash covers copied files, the body, translated policy,
+  and the budgeted description. Adding or removing a sibling skill therefore
+  re-renders only mirrors whose fair share changed, while an edit beyond an
+  already-compacted description prefix remains a true no-op.
 - **Loop-safe.** Every mirror carries a `metadata.ported_by` marker; the porter
   skips any source already carrying it, so installing *both* directions never
   creates an A→B→A duplicate spiral.
@@ -77,9 +83,12 @@ The sync is safe by construction:
   `CODEX_HOME` (falling back to `~/.claude` / `~/.codex`, or `%USERPROFILE%` on
   Windows).
 
-After upgrading from `0.1.0`, run the `claude-to-codex` bootstrap once more.
-The `0.1.1` porter re-renders existing mirrors with sparse Codex metadata,
-reducing file-descriptor pressure when Codex reloads a large skill collection.
+After upgrading from `0.1.0` or `0.1.1`, run the `claude-to-codex` bootstrap
+once more. The `0.1.2` porter re-renders existing mirrors with sparse Codex
+metadata and budgeted descriptions, reducing file-descriptor and skills-context
+pressure when Codex reloads a large skill collection. When compaction occurs,
+the sync reports how many descriptions were shortened and the before/after
+character totals; unchanged session starts stay quiet.
 
 ## Scope of this release
 

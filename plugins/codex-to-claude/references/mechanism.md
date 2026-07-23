@@ -35,9 +35,12 @@ metadata:
   source_agent: codex
   source_name: <original skill dir name>
   source_hash: <sha-256 of the entire source skill directory>
+  render_hash: <sha-256 of the effective generated mirror inputs>
 ```
 
-- **`source_hash`** drives the incremental fast path: unchanged hash → skip.
+- **`source_hash`** records the raw source snapshot for diagnostics.
+- **`render_hash`** drives the incremental fast path: unchanged effective
+  generated output → skip.
 - **`ported_by`** drives loop-safety and non-clobber: the enumerator skips any
   *source* carrying it (so a claude→codex mirror is never re-ported), and the
   writer refuses to overwrite a *target* that lacks it (so your own skills are

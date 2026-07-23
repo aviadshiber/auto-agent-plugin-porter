@@ -52,11 +52,16 @@ metadata:
   source_agent: claude
   source_name: <original skill dir name>
   source_hash: <sha-256 of the entire source skill directory>
+  render_hash: <sha-256 of the effective generated mirror inputs>
 ```
 
-`source_hash` drives the incremental fast path; `ported_by` drives loop-safety
-(skip already-ported sources) and non-clobber (never overwrite a Codex skill we
-did not create). A Claude skill `foo` becomes the Codex skill `claude-foo`.
+`source_hash` records the raw source snapshot for diagnostics. `render_hash`
+drives the incremental fast path and covers the copied files, body, translated
+policy, and budgeted description. This means a change beyond a compacted
+description's visible prefix is a true no-op, while any effective output change
+forces a rewrite. `ported_by` drives loop-safety (skip already-ported sources)
+and non-clobber (never overwrite a Codex skill we did not create). A Claude
+skill `foo` becomes the Codex skill `claude-foo`.
 
 ## Frontmatter translation
 
@@ -71,6 +76,16 @@ auto-invocation-off case. Ordinary Codex mirrors use `SKILL.md` alone. Keeping
 this metadata sparse reduces the number of files Codex opens concurrently when
 it hot-reloads a large user skill collection.
 
+Codex exposes skill names and descriptions to the model under a 2% context
+budget. The porter gives generated descriptions a conservative aggregate
+8,000-character budget and distributes it fairly: short descriptions keep their
+full text, while longer descriptions receive equal remaining shares. The
+budgeted description participates in `render_hash`, so adding or removing a
+source skill updates only existing mirrors whose effective allocation changes.
+When compaction causes writes, sync reports the number of shortened
+descriptions and the before/after character totals; ordinary no-op session
+starts remain quiet.
+
 ## Troubleshooting
 
 - **Nothing syncs after install** — you must run the bootstrap once (see
@@ -81,9 +96,10 @@ it hot-reloads a large user skill collection.
   whose command ends in `--source claude --target codex`, and that you approved
   the trust prompt.
 - **After a plugin upgrade** — re-run the bootstrap to rebuild + refresh.
-- **Codex reports `Too many open files` after upgrading from `0.1.0`** — run
-  the bootstrap again so porter `0.1.1+` rebuilds the mirrors with sparse Codex
-  metadata, then restart Codex once.
+- **Codex reports `Too many open files` or shortened skill descriptions after
+  upgrading from `0.1.0`/`0.1.1`** — run the bootstrap again so porter `0.1.2+`
+  rebuilds the mirrors with sparse Codex metadata and budgeted descriptions,
+  then restart Codex once.
 - **Remove the hook** — edit `~/.codex/hooks.json` and delete the porter
   `SessionStart` entry.
 

@@ -2,11 +2,20 @@
 
 use crate::agent::Agent;
 use crate::frontmatter;
-use crate::hashing::hash_dir;
+use crate::hashing::{hash_dir, hash_render_plan};
 use serde_yaml::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+
+/// Aggregate character budget for descriptions generated into Codex mirrors.
+///
+/// Codex caps the complete model-visible skill catalog to 2% of the model
+/// context window and falls back to an 8,000-character metadata budget when
+/// the window is unknown. Reserving at most that much for ported descriptions
+/// leaves room for skill names, paths, and native/plugin skills while retaining
+/// useful routing text. The budget is shared fairly across the source corpus.
+const CODEX_MIRROR_DESCRIPTION_CHAR_BUDGET: usize = 8_000;
 
 /// Inputs to a single sync run (source → target).
 pub struct SyncOptions {
@@ -35,6 +44,16 @@ pub struct SyncReport {
     pub skipped_target_conflict: Vec<String>,
     pub pruned: Vec<String>,
     pub errors: Vec<String>,
+    /// Present when Claude→Codex descriptions exceeded the porter's
+    /// corpus-wide budget and were compacted for model-visible discovery.
+    pub description_compaction: Option<DescriptionCompaction>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DescriptionCompaction {
+    pub shortened_count: usize,
+    pub original_chars: usize,
+    pub rendered_chars: usize,
 }
 
 impl SyncReport {
@@ -56,6 +75,20 @@ impl SyncReport {
             self.skipped_source_is_mirror.len() + self.skipped_target_conflict.len(),
             self.errors.len(),
         )
+    }
+
+    /// User-facing notice for a sync that wrote budgeted descriptions. No-op
+    /// session starts stay quiet even though the stored descriptions remain
+    /// compacted.
+    pub fn description_compaction_notice(&self) -> Option<String> {
+        let compaction = self.description_compaction.as_ref()?;
+        (self.changed() > 0).then(|| {
+            format!(
+                "agent-porter: warning: compacted {} Codex skill descriptions from {} to {} \
+                 characters to stay within Codex's skills-context budget",
+                compaction.shortened_count, compaction.original_chars, compaction.rendered_chars,
+            )
+        })
     }
 }
 
@@ -116,6 +149,8 @@ pub fn sync(opts: &SyncOptions) -> crate::Result<SyncReport> {
         .map(|e| e.path())
         .collect();
     entries.sort();
+    let (codex_descriptions, description_compaction) = prepare_codex_descriptions(opts, &entries);
+    report.description_compaction = description_compaction;
 
     let mut generated: HashSet<String> = HashSet::new();
     for src_skill in &entries {
@@ -130,6 +165,7 @@ pub fn sync(opts: &SyncOptions) -> crate::Result<SyncReport> {
             &dst_skills,
             &mut report,
             &mut generated,
+            codex_descriptions.get(&name).map(String::as_str),
         ) {
             report.errors.push(format!("{name}: {e}"));
         }
@@ -150,6 +186,7 @@ fn port_one(
     dst_skills: &Path,
     report: &mut SyncReport,
     generated: &mut HashSet<String>,
+    compact_description: Option<&str>,
 ) -> crate::Result<()> {
     // Normalize CRLF → LF so a SKILL.md saved by a Windows editor still parses
     // (the fence detection is LF-based) and the mirror body is clean LF.
@@ -171,13 +208,33 @@ fn port_one(
         return Ok(());
     }
 
-    let description = frontmatter::get_str(&src_fm, "description")
+    let source_description = frontmatter::get_str(&src_fm, "description")
+        .filter(|description| !description.trim().is_empty())
         .unwrap_or_else(|| format!("Ported {} skill '{}'.", opts.source.as_str(), name));
+    let description = compact_description.unwrap_or(&source_description);
     let implicit_allowed = compute_implicit_allowed(opts.source, &src_fm, src_skill);
     let allowed_tools = src_fm.get("allowed-tools").cloned();
     let source_hash = hash_dir(src_skill)?;
 
     let mirror_name = format!("{}{}", opts.source.prefix(), name);
+    let allowed_tools_render = match &allowed_tools {
+        Some(value) => serde_yaml::to_string(value)?,
+        None => String::new(),
+    };
+    let implicit_render = implicit_allowed.to_string();
+    let render_hash = hash_render_plan(
+        src_skill,
+        &[
+            opts.source.as_str(),
+            opts.target.as_str(),
+            name,
+            &mirror_name,
+            description,
+            body,
+            &implicit_render,
+            &allowed_tools_render,
+        ],
+    )?;
     let dst_skill = dst_skills.join(&mirror_name);
     generated.insert(mirror_name.clone());
 
@@ -193,7 +250,7 @@ fn port_one(
             // must force one re-render even when the source is byte-identical,
             // otherwise mirrors keep stale rendering / porter_version forever.
             Some(mk)
-                if mk.source_hash == source_hash && mk.porter_version == crate::PORTER_VERSION =>
+                if mk.render_hash == render_hash && mk.porter_version == crate::PORTER_VERSION =>
             {
                 report.unchanged.push(mirror_name);
                 return Ok(());
@@ -204,11 +261,12 @@ fn port_one(
                         opts,
                         src_skill,
                         body,
-                        &description,
+                        description,
                         implicit_allowed,
                         allowed_tools,
                         name,
                         &source_hash,
+                        &render_hash,
                         &mirror_name,
                         &dst_skill,
                     )?;
@@ -222,11 +280,12 @@ fn port_one(
                 opts,
                 src_skill,
                 body,
-                &description,
+                description,
                 implicit_allowed,
                 allowed_tools,
                 name,
                 &source_hash,
+                &render_hash,
                 &mirror_name,
                 &dst_skill,
             )?;
@@ -234,6 +293,133 @@ fn port_one(
         report.created.push(mirror_name);
     }
     Ok(())
+}
+
+/// Read source descriptions once to compute a deterministic, corpus-wide
+/// description allocation for Codex. `port_one` still performs authoritative
+/// parsing and error reporting; failures here simply fall back to the original
+/// description there.
+fn prepare_codex_descriptions(
+    opts: &SyncOptions,
+    entries: &[PathBuf],
+) -> (HashMap<String, String>, Option<DescriptionCompaction>) {
+    if opts.target != Agent::Codex {
+        return (HashMap::new(), None);
+    }
+
+    let mut descriptions = Vec::new();
+    for src_skill in entries {
+        let Some(name) = dir_skill_name(src_skill) else {
+            continue;
+        };
+        let Ok(text) = fs::read_to_string(src_skill.join("SKILL.md")) else {
+            continue;
+        };
+        let normalized = text.replace("\r\n", "\n");
+        let Some((fm_str, _)) = frontmatter::split(&normalized) else {
+            continue;
+        };
+        let Ok(src_fm) = frontmatter::parse_mapping(fm_str) else {
+            continue;
+        };
+        if frontmatter::is_ported(&src_fm) {
+            continue;
+        }
+        let mirror_name = format!("{}{}", opts.source.prefix(), name);
+        let dst_skill = opts.target_dir.join("skills").join(mirror_name);
+        if dst_skill.exists() && existing_marker(&dst_skill).is_none() {
+            continue;
+        }
+        let description = frontmatter::get_str(&src_fm, "description")
+            .filter(|description| !description.trim().is_empty())
+            .unwrap_or_else(|| format!("Ported {} skill '{}'.", opts.source.as_str(), name));
+        descriptions.push((name, normalize_description(&description)));
+    }
+
+    let original_chars = descriptions
+        .iter()
+        .map(|(_, description)| description.chars().count())
+        .sum();
+    let allocated =
+        allocate_description_budget(&descriptions, CODEX_MIRROR_DESCRIPTION_CHAR_BUDGET);
+    let rendered_chars = allocated
+        .values()
+        .map(|description| description.chars().count())
+        .sum();
+    let shortened_count = descriptions
+        .iter()
+        .filter(|(name, description)| {
+            allocated
+                .get(name)
+                .is_some_and(|rendered| rendered.chars().count() < description.chars().count())
+        })
+        .count();
+    let compaction = (shortened_count > 0).then_some(DescriptionCompaction {
+        shortened_count,
+        original_chars,
+        rendered_chars,
+    });
+    (allocated, compaction)
+}
+
+fn normalize_description(description: &str) -> String {
+    description.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Fair-share allocation matching Codex's high-level behavior: every
+/// description receives one character per round, while short descriptions
+/// drop out and return their unused share to longer ones.
+fn allocate_description_budget(
+    descriptions: &[(String, String)],
+    budget: usize,
+) -> HashMap<String, String> {
+    if descriptions.is_empty() {
+        return HashMap::new();
+    }
+
+    // Keep every description non-empty even for an extreme corpus larger than
+    // the normal budget. Codex relies on descriptions for implicit routing.
+    let effective_budget = budget.max(descriptions.len());
+    let char_counts: Vec<usize> = descriptions
+        .iter()
+        .map(|(_, description)| description.chars().count())
+        .collect();
+    let mut allocations = vec![0usize; descriptions.len()];
+    let mut remaining = effective_budget;
+
+    while remaining > 0 {
+        let mut progressed = false;
+        for (index, count) in char_counts.iter().enumerate() {
+            if allocations[index] < *count && remaining > 0 {
+                allocations[index] += 1;
+                remaining -= 1;
+                progressed = true;
+            }
+        }
+        if !progressed {
+            break;
+        }
+    }
+
+    descriptions
+        .iter()
+        .zip(allocations)
+        .map(|((name, description), allocation)| {
+            (name.clone(), truncate_description(description, allocation))
+        })
+        .collect()
+}
+
+fn truncate_description(description: &str, max_chars: usize) -> String {
+    let count = description.chars().count();
+    if count <= max_chars {
+        return description.to_string();
+    }
+    if max_chars <= 1 {
+        return "…".to_string();
+    }
+    let prefix: String = description.chars().take(max_chars - 1).collect();
+    format!("{}…", prefix.trim_end())
 }
 
 /// The porter marker of an existing target skill, or `None` when the target is
@@ -281,6 +467,7 @@ fn write_mirror(
     allowed_tools: Option<Value>,
     source_name: &str,
     source_hash: &str,
+    render_hash: &str,
     mirror_name: &str,
     dst_skill: &Path,
 ) -> crate::Result<()> {
@@ -329,6 +516,7 @@ fn write_mirror(
             opts.source,
             source_name,
             source_hash,
+            render_hash,
         );
         fs::write(staging.join("SKILL.md"), frontmatter::render(&fm, body)?)?;
         // `agents/openai.yaml` is optional in Codex. Emit it only when it

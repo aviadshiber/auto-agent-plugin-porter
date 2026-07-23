@@ -50,9 +50,13 @@ directory, with the frontmatter translated to Codex's dialect. An optional
 `agents/openai.yaml` is generated only when needed to preserve a non-default
 invocation policy (Claude's `disable-model-invocation` becomes
 `policy.allow_implicit_invocation: false`).
+For large collections, generated descriptions share a fair 8,000-character
+budget so they fit alongside native and plugin skills in Codex's skills-context
+allocation. The sync reports compaction when it writes affected mirrors.
 
-The sync is one-way (Claude → Codex), **hash-gated** (only changed skills are
-rewritten), **loop-safe** (mirrors carry a `metadata.ported_by` marker and are
+The sync is one-way (Claude → Codex), **hash-gated** (only effective generated
+changes are rewritten), **loop-safe** (mirrors carry a
+`metadata.ported_by` marker and are
 never re-ported), **non-destructive** (never overwrites a Codex skill it did not
 create; mirrors are `claude-` prefixed), and **self-pruning** (deleting a Claude
 skill removes its Codex mirror next sync).

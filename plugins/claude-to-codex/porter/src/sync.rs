@@ -245,10 +245,10 @@ fn port_one(
                 report.skipped_target_conflict.push(mirror_name);
                 return Ok(());
             }
-            // Unchanged only if BOTH the source content and the porter version
-            // match — a porter upgrade that changes how mirrors are rendered
-            // must force one re-render even when the source is byte-identical,
-            // otherwise mirrors keep stale rendering / porter_version forever.
+            // Unchanged only if BOTH the effective render plan and porter
+            // version match. A porter upgrade that changes rendering must force
+            // one re-render even when effective inputs are identical, otherwise
+            // mirrors keep stale rendering / porter_version forever.
             Some(mk)
                 if mk.render_hash == render_hash && mk.porter_version == crate::PORTER_VERSION =>
             {

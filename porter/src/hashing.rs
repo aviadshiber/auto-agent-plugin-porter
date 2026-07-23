@@ -1,19 +1,19 @@
 //! Content hashing for the incremental-sync fast path.
 //!
-//! The source of truth for "did this skill change?" is a hash over the *entire*
-//! skill directory (SKILL.md + references/ + scripts/ + assets/), not just
-//! SKILL.md — a change to a referenced file must also trigger a re-port. The
-//! hash is stored in the generated mirror's `metadata.source_hash`; on the next
-//! run we recompute and compare, and skip the write when they match.
+//! `source_hash` records the entire raw source tree for diagnostics.
+//! `render_hash` is the incremental fast-path key: it covers the translated
+//! SKILL.md inputs and every copied file, so a referenced-file change triggers
+//! a re-port while source edits that cannot affect generated output stay no-ops.
 
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::Path;
 
-/// Deterministic SHA-256 over every file under `dir`, keyed by forward-slash
-/// relative path (so the digest is identical on Windows and Unix). Directories
-/// and symlinks-to-dirs are recursed; file bytes are length-prefixed to avoid
-/// boundary-collision ambiguity between adjacent files.
+/// Deterministic diagnostic SHA-256 over every file under `dir`, keyed by
+/// forward-slash relative path (so the digest is identical on Windows and
+/// Unix). Directories and symlinks-to-dirs are recursed; file bytes are
+/// length-prefixed to avoid boundary-collision ambiguity between adjacent
+/// files.
 pub fn hash_dir(dir: &Path) -> std::io::Result<String> {
     let mut rels: Vec<String> = Vec::new();
     collect(dir, dir, &mut rels)?;

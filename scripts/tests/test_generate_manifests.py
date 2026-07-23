@@ -390,6 +390,27 @@ def test_diff_trees_skips_claude_manifest_for_codex_only(tmp_path):
     assert drift == []
 
 
+def test_diff_trees_skips_codex_manifest_for_claude_only(tmp_path):
+    """Mirror of the codex_only case: a claude_only plugin ships no
+    .codex-plugin/plugin.json, so a stray generated one must not be flagged."""
+    gen = tmp_path / "gen"
+    actual = tmp_path / "actual"
+    for root in (gen, actual):
+        (root / ".claude-plugin").mkdir(parents=True)
+        (root / ".claude-plugin" / "marketplace.json").write_text("x")
+        (root / ".agents" / "plugins").mkdir(parents=True)
+        (root / ".agents" / "plugins" / "marketplace.json").write_text("x")
+        (root / "plugins" / "foo" / ".claude-plugin").mkdir(parents=True)
+        (root / "plugins" / "foo" / ".claude-plugin" / "plugin.json").write_text("y")
+    # Only the generated tree has a .codex-plugin/plugin.json — must be ignored
+    # for a claude_only plugin.
+    (gen / "plugins" / "foo" / ".codex-plugin").mkdir(parents=True)
+    (gen / "plugins" / "foo" / ".codex-plugin" / "plugin.json").write_text("z")
+    reg = {"plugins": [{"name": "foo", "claude_only": True}]}
+    drift = gm.diff_trees(gen, actual, reg)
+    assert drift == []
+
+
 def test_diff_trees_reports_content_diff(tmp_path):
     gen = tmp_path / "gen"
     actual = tmp_path / "actual"

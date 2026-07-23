@@ -202,3 +202,150 @@ fn missing_source_skills_dir_is_a_noop() {
     assert_eq!(report.changed(), 0);
     assert!(report.errors.is_empty());
 }
+
+#[test]
+fn codex_openai_yaml_policy_translates_to_claude_disable() {
+    // Reverse of claude_to_codex_emits_openai_yaml_with_policy: a Codex source
+    // whose agents/openai.yaml disables implicit invocation must produce a
+    // Claude mirror with disable-model-invocation: true.
+    let src = tempfile::tempdir().unwrap();
+    let dst = tempfile::tempdir().unwrap();
+    make_skill(
+        src.path(),
+        "manual",
+        "name: manual\ndescription: A manual-only Codex skill",
+        "body\n",
+        &[(
+            "agents/openai.yaml",
+            "interface:\n  display_name: Manual\npolicy:\n  allow_implicit_invocation: false\n",
+        )],
+    );
+
+    let report = sync(&opts(Agent::Codex, Agent::Claude, src.path(), dst.path())).unwrap();
+    assert_eq!(report.created, vec!["codex-manual".to_string()]);
+    let skill = read(dst.path().join("skills/codex-manual/SKILL.md"));
+    assert!(skill.contains("disable-model-invocation: true"));
+    // Codex→Claude never emits an openai.yaml in the mirror.
+    assert!(!dst
+        .path()
+        .join("skills/codex-manual/agents/openai.yaml")
+        .exists());
+}
+
+#[test]
+fn prune_only_touches_its_own_direction() {
+    // A single Claude skills dir holds BOTH a codex-* mirror (from codex→claude)
+    // and a claude-* mirror (the other direction's artifact). Pruning the
+    // codex→claude direction with an empty Codex source must remove the codex-*
+    // mirror but leave the claude-* mirror (different source_agent) untouched.
+    let src = tempfile::tempdir().unwrap(); // empty Codex source
+    let dst = tempfile::tempdir().unwrap(); // Claude target
+    std::fs::create_dir_all(src.path().join("skills")).unwrap();
+
+    // Our own codex→claude mirror (should be prunable).
+    make_skill(
+        dst.path(),
+        "codex-gone",
+        "name: codex-gone\ndescription: d\nmetadata:\n  ported_by: auto-agent-plugin-porter\n  source_agent: codex\n  source_name: gone\n  source_hash: x",
+        "b\n",
+        &[],
+    );
+    // The other direction's mirror living in the same dir (must survive).
+    make_skill(
+        dst.path(),
+        "claude-keep",
+        "name: claude-keep\ndescription: d\nmetadata:\n  ported_by: auto-agent-plugin-porter\n  source_agent: claude\n  source_name: keep\n  source_hash: y",
+        "b\n",
+        &[],
+    );
+
+    let report = sync(&opts(Agent::Codex, Agent::Claude, src.path(), dst.path())).unwrap();
+    assert_eq!(report.pruned, vec!["codex-gone".to_string()]);
+    assert!(!dst.path().join("skills/codex-gone").exists());
+    assert!(
+        dst.path().join("skills/claude-keep").exists(),
+        "other direction's mirror must survive"
+    );
+}
+
+#[test]
+fn porter_version_change_forces_rerender() {
+    // A mirror whose source is byte-identical but whose recorded porter_version
+    // is stale must be re-rendered (so upgrades never leave stale mirrors).
+    let src = tempfile::tempdir().unwrap();
+    let dst = tempfile::tempdir().unwrap();
+    make_skill(
+        src.path(),
+        "foo",
+        "name: foo\ndescription: d",
+        "body\n",
+        &[],
+    );
+    sync(&opts(Agent::Codex, Agent::Claude, src.path(), dst.path())).unwrap();
+
+    // Rewrite only the porter_version line in the mirror to an old value.
+    let p = dst.path().join("skills/codex-foo/SKILL.md");
+    let stale = read(p.clone()).replace(
+        &format!("porter_version: {}", env!("CARGO_PKG_VERSION")),
+        "porter_version: 0.0.0",
+    );
+    std::fs::write(&p, stale).unwrap();
+
+    let report = sync(&opts(Agent::Codex, Agent::Claude, src.path(), dst.path())).unwrap();
+    assert_eq!(report.updated, vec!["codex-foo".to_string()]);
+    assert!(read(p).contains(&format!("porter_version: {}", env!("CARGO_PKG_VERSION"))));
+}
+
+#[test]
+fn crlf_frontmatter_is_ported() {
+    let src = tempfile::tempdir().unwrap();
+    let dst = tempfile::tempdir().unwrap();
+    let dir = src.path().join("skills").join("winskill");
+    std::fs::create_dir_all(&dir).unwrap();
+    // CRLF line endings, as a Windows editor would save.
+    std::fs::write(
+        dir.join("SKILL.md"),
+        "---\r\nname: winskill\r\ndescription: saved with CRLF\r\n---\r\n# Body\r\nhi\r\n",
+    )
+    .unwrap();
+
+    let report = sync(&opts(Agent::Codex, Agent::Claude, src.path(), dst.path())).unwrap();
+    assert_eq!(report.created, vec!["codex-winskill".to_string()]);
+    let skill = read(dst.path().join("skills/codex-winskill/SKILL.md"));
+    assert!(skill.contains("name: codex-winskill"));
+    assert!(skill.contains("# Body"));
+}
+
+#[test]
+fn skill_without_frontmatter_is_reported_not_aborted() {
+    // A bad skill must be recorded as an error but NOT abort the whole run —
+    // a good sibling skill still ports.
+    let src = tempfile::tempdir().unwrap();
+    let dst = tempfile::tempdir().unwrap();
+    let bad = src.path().join("skills").join("bad");
+    std::fs::create_dir_all(&bad).unwrap();
+    std::fs::write(bad.join("SKILL.md"), "no frontmatter here\n").unwrap();
+    make_skill(
+        src.path(),
+        "good",
+        "name: good\ndescription: d",
+        "body\n",
+        &[],
+    );
+
+    let report = sync(&opts(Agent::Codex, Agent::Claude, src.path(), dst.path())).unwrap();
+    assert_eq!(report.created, vec!["codex-good".to_string()]);
+    assert!(report.errors.iter().any(|e| e.contains("bad")));
+    assert!(dst.path().join("skills/codex-good").exists());
+}
+
+#[test]
+fn cli_rejects_same_source_and_target() {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_agent-porter"))
+        .args(["sync", "--source", "claude", "--target", "claude"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("different agents"), "stderr was: {stderr}");
+}

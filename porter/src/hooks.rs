@@ -43,8 +43,25 @@ fn is_our_command(cmd: &str) -> bool {
         && cmd.contains("--target codex")
 }
 
+/// Reject a binary path that could break out of the double-quoted hook command
+/// string. `$` and backticks trigger command substitution even inside double
+/// quotes; `"` closes the quote; newlines split the command. Backslash is left
+/// alone — it is legitimate in Windows paths. The path is env-derived (not
+/// attacker-controlled) under the normal threat model, so this is hardening.
+fn is_safe_bin_path(p: &str) -> bool {
+    !p.is_empty() && !p.contains(['"', '$', '`', '\n', '\r'])
+}
+
 /// Merge a `SessionStart` porter hook into `<codex_home>/hooks.json`.
 pub fn install_codex_session_hook(opts: &InstallOptions) -> crate::Result<InstallOutcome> {
+    if !is_safe_bin_path(&opts.porter_bin) {
+        return Err(format!(
+            "refusing to install hook: porter binary path contains unsafe characters: {:?}",
+            opts.porter_bin
+        )
+        .into());
+    }
+
     let hooks_path = opts.codex_home.join("hooks.json");
     let mut root = load_json_object(&hooks_path)?;
 
@@ -206,5 +223,29 @@ mod tests {
             dry_run: false,
         });
         assert!(r.is_err());
+    }
+
+    #[test]
+    fn refuses_unsafe_binary_path() {
+        let dir = tempfile::tempdir().unwrap();
+        // A path with a command substitution must be rejected, and nothing
+        // must be written to hooks.json.
+        let r = install_codex_session_hook(&InstallOptions {
+            codex_home: dir.path().to_path_buf(),
+            porter_bin: "/opt/agent-porter\"; $(rm -rf ~) #".into(),
+            dry_run: false,
+        });
+        assert!(r.is_err());
+        assert!(!dir.path().join("hooks.json").exists());
+    }
+
+    #[test]
+    fn safe_path_predicate() {
+        assert!(is_safe_bin_path("/opt/agent-porter"));
+        assert!(is_safe_bin_path(r"C:\Users\me\.cache\agent-porter.exe")); // backslashes OK
+        assert!(!is_safe_bin_path("a$(b)"));
+        assert!(!is_safe_bin_path("a`b`"));
+        assert!(!is_safe_bin_path("a\"b"));
+        assert!(!is_safe_bin_path(""));
     }
 }

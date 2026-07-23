@@ -109,7 +109,9 @@ fn port_one(
     report: &mut SyncReport,
     generated: &mut HashSet<String>,
 ) -> crate::Result<()> {
-    let text = fs::read_to_string(src_skill.join("SKILL.md"))?;
+    // Normalize CRLF → LF so a SKILL.md saved by a Windows editor still parses
+    // (the fence detection is LF-based) and the mirror body is clean LF.
+    let text = fs::read_to_string(src_skill.join("SKILL.md"))?.replace("\r\n", "\n");
     let (fm_str, body) = match frontmatter::split(&text) {
         Some(v) => v,
         None => {
@@ -144,7 +146,13 @@ fn port_one(
                 report.skipped_target_conflict.push(mirror_name);
                 return Ok(());
             }
-            Some(mk) if mk.source_hash == source_hash => {
+            // Unchanged only if BOTH the source content and the porter version
+            // match — a porter upgrade that changes how mirrors are rendered
+            // must force one re-render even when the source is byte-identical,
+            // otherwise mirrors keep stale rendering / porter_version forever.
+            Some(mk)
+                if mk.source_hash == source_hash && mk.porter_version == crate::PORTER_VERSION =>
+            {
                 report.unchanged.push(mirror_name);
                 return Ok(());
             }
@@ -237,6 +245,16 @@ fn write_mirror(
     // Rebuild from scratch so stale files from a previous port cannot linger.
     // We only reach here for a target we own (marker checked) or a fresh dir.
     if dst_skill.exists() {
+        // Defense-in-depth (CWE-59): never follow a symlink — only replace a
+        // real directory. remove_dir_all on a symlinked dir could act outside
+        // the skills tree if an attacker pre-planted a marked symlink.
+        if fs::symlink_metadata(dst_skill)?.file_type().is_symlink() {
+            return Err(format!(
+                "refusing to replace symlinked target: {}",
+                dst_skill.display()
+            )
+            .into());
+        }
         fs::remove_dir_all(dst_skill)?;
     }
     fs::create_dir_all(dst_skill)?;
@@ -316,6 +334,17 @@ fn prune(
         };
         if mk.source_agent != opts.source.as_str() {
             continue; // ported from the other direction — not ours to prune
+        }
+        // Defense-in-depth (CWE-22): source_name comes from the mirror's own
+        // (user-tamperable) frontmatter. It must be a single path component;
+        // a value with separators or ".." could turn the existence probe below
+        // into an arbitrary-path check. A legitimate marker never has these.
+        if mk.source_name.is_empty()
+            || mk.source_name.contains('/')
+            || mk.source_name.contains('\\')
+            || mk.source_name.contains("..")
+        {
+            continue;
         }
         let source_still_present = src_skills.join(&mk.source_name).join("SKILL.md").is_file();
         if !source_still_present {

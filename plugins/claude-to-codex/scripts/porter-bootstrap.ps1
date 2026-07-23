@@ -12,7 +12,9 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $pluginRoot = Split-Path -Parent $scriptDir
 $bin = Get-PorterBin $pluginRoot
 if (-not $bin) {
-    Write-Error 'agent-porter: cannot bootstrap without a built binary (install Rust from https://rustup.rs).'
+    # Write-Warning (not Write-Error): under $ErrorActionPreference='Stop',
+    # Write-Error would throw and skip our controlled `exit 1`.
+    Write-Warning 'agent-porter: cannot bootstrap without a built binary (install Rust from https://rustup.rs).'
     exit 1
 }
 

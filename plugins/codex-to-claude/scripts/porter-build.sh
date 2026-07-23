@@ -23,10 +23,12 @@ porter_ensure_built() {
 
   mkdir -p "$bin_dir"
 
+  _porter_have_hasher() {
+    command -v shasum >/dev/null 2>&1 || command -v sha256sum >/dev/null 2>&1
+  }
   _porter_hasher() {
     if command -v shasum >/dev/null 2>&1; then shasum -a 256
-    elif command -v sha256sum >/dev/null 2>&1; then sha256sum
-    else cat; fi
+    else sha256sum; fi
   }
   _porter_src_hash() {
     {
@@ -35,11 +37,29 @@ porter_ensure_built() {
     } | _porter_hasher | cut -d' ' -f1
   }
 
+  # Staleness decision, cheapest check first:
+  #   1. no binary / no stamp        → build
+  #   2. mtime quick check: is any crate file NEWER than the stamp? If not, the
+  #      binary is current — fast path, NO content hash, NO cargo (this is the
+  #      overwhelmingly common per-session case).
+  #   3. something is newer → confirm with the content hash (handles a
+  #      touch-without-change); rebuild only if content actually differs. With
+  #      no SHA tool available we cannot verify content, so rebuild to be safe
+  #      (never emit a bogus hash).
   local need_build=0
-  if [ ! -x "$PORTER_BIN" ]; then
+  if [ ! -x "$PORTER_BIN" ] || [ ! -f "$stamp" ]; then
     need_build=1
-  elif [ ! -f "$stamp" ] || [ "$(cat "$stamp" 2>/dev/null || true)" != "$(_porter_src_hash)" ]; then
-    need_build=1
+  elif find "$crate_dir/Cargo.toml" "$crate_dir/Cargo.lock" "$crate_dir/src" \
+        -type f -newer "$stamp" -print 2>/dev/null | grep -q .; then
+    if _porter_have_hasher; then
+      if [ "$(cat "$stamp" 2>/dev/null || true)" != "$(_porter_src_hash)" ]; then
+        need_build=1
+      else
+        touch "$stamp"   # content identical; reset the mtime baseline
+      fi
+    else
+      need_build=1
+    fi
   fi
 
   if [ "$need_build" -eq 1 ]; then
@@ -57,7 +77,9 @@ porter_ensure_built() {
       return 1
     fi
     cp "$target_dir/release/agent-porter" "$PORTER_BIN"
-    _porter_src_hash > "$stamp"
+    # Record the content hash when we can; otherwise an empty stamp still works
+    # (the mtime quick check drives the no-hasher path — content is never read).
+    if _porter_have_hasher; then _porter_src_hash > "$stamp"; else : > "$stamp"; fi
   fi
   return 0
 }

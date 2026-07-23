@@ -44,16 +44,43 @@ function Get-PorterBin([string]$pluginRoot) {
         ($sha.ComputeHash($acc) | ForEach-Object { $_.ToString('x2') }) -join ''
     }
 
+    # Cheap staleness gate: a stat-only mtime check first (fast path), falling
+    # back to the full content hash only when a crate file is newer than the
+    # stamp — so the steady-state session pays ~a few stats, never a full read.
     $needBuild = $false
-    if (-not (Test-Path $bin)) {
+    if (-not (Test-Path $bin) -or -not (Test-Path $stamp)) {
         $needBuild = $true
-    } elseif (-not (Test-Path $stamp) -or ((Get-Content -Raw $stamp).Trim() -ne (Get-SrcHash))) {
-        $needBuild = $true
+    } else {
+        $stampTime = (Get-Item $stamp).LastWriteTimeUtc
+        $files = @()
+        foreach ($f in @('Cargo.toml', 'Cargo.lock')) {
+            $p = Join-Path $crateDir $f
+            if (Test-Path $p) { $files += $p }
+        }
+        $srcDir = Join-Path $crateDir 'src'
+        if (Test-Path $srcDir) {
+            $files += (Get-ChildItem -Recurse -File $srcDir | ForEach-Object { $_.FullName })
+        }
+        $newer = $false
+        foreach ($p in $files) {
+            if ((Get-Item $p).LastWriteTimeUtc -gt $stampTime) { $newer = $true; break }
+        }
+        if ($newer) {
+            if ((Get-Content -Raw $stamp).Trim() -ne (Get-SrcHash)) {
+                $needBuild = $true
+            } else {
+                # Touched but content-identical → reset the mtime baseline.
+                (Get-Item $stamp).LastWriteTime = Get-Date
+            }
+        }
     }
 
     if ($needBuild) {
         if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
-            Write-Error 'agent-porter: Rust toolchain not found — install from https://rustup.rs.'
+            # Write-Warning (not Write-Error) so that under $ErrorActionPreference
+            # = 'Stop' the caller still gets $null and can exit 0 — a missing
+            # toolchain must NOT block the session.
+            Write-Warning 'agent-porter: Rust toolchain not found — install from https://rustup.rs.'
             return $null
         }
         Write-Host 'agent-porter: building the porter binary (first run or source changed; this can take ~30-90s once)…'
@@ -63,7 +90,7 @@ function Get-PorterBin([string]$pluginRoot) {
         try {
             $env:CARGO_TARGET_DIR = $targetDir
             cargo build --release --quiet
-            if ($LASTEXITCODE -ne 0) { Write-Error 'agent-porter: build failed.'; return $null }
+            if ($LASTEXITCODE -ne 0) { Write-Warning 'agent-porter: build failed.'; return $null }
         } finally {
             Pop-Location
         }

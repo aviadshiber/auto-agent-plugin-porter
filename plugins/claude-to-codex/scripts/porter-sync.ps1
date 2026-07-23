@@ -12,7 +12,9 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $pluginRoot = Get-PorterFirstEnv @('CLAUDE_PLUGIN_ROOT', 'PLUGIN_ROOT') (Split-Path -Parent $scriptDir)
 $bin = Get-PorterBin $pluginRoot
 if (-not $bin) {
-    Write-Error 'agent-porter: skipping porting this session.'
+    # Write-Warning (not Write-Error) so $ErrorActionPreference='Stop' doesn't
+    # throw before `exit 0` — the session must never be blocked.
+    Write-Warning 'agent-porter: skipping porting this session.'
     exit 0
 }
 

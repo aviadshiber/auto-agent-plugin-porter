@@ -42,6 +42,13 @@ registry/schema.json      ← JSON Schema (draft 2020-12) validating the IR
 Never hand-edit the generated files. Edit `registry/plugins.json` and re-run
 the generator.
 
+Likewise, the Rust porter lives once at `porter/` (crate) and `porter/wrappers/`
+(shell/PowerShell launchers); `scripts/sync-porter.sh` vendors those into each
+plugin's `porter/` and `scripts/`. **Never hand-edit `plugins/*/porter/` or
+`plugins/*/scripts/`** — edit the canonical `porter/` and re-run
+`./scripts/sync-porter.sh`. CI runs `./scripts/sync-porter.sh --check` as the
+drift gate.
+
 ## Branch workflow
 
 **No commits to `master`.** The hooks block it locally; branch permissions

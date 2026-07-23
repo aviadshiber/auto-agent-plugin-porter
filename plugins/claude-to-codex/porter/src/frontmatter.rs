@@ -16,6 +16,7 @@ pub struct Marker {
     pub source_agent: String,
     pub source_name: String,
     pub source_hash: String,
+    pub porter_version: String,
 }
 
 /// Split raw SKILL.md text into `(frontmatter_yaml, body)`. Returns `None` when
@@ -62,6 +63,7 @@ pub fn marker(m: &Mapping) -> Option<Marker> {
         source_agent: get_str(meta, "source_agent").unwrap_or_default(),
         source_name: get_str(meta, "source_name").unwrap_or_default(),
         source_hash: get_str(meta, "source_hash").unwrap_or_default(),
+        porter_version: get_str(meta, "porter_version").unwrap_or_default(),
     })
 }
 

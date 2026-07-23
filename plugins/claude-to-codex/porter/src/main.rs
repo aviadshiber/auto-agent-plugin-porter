@@ -174,3 +174,33 @@ fn has_flag(args: &[String], name: &str) -> bool {
     let long = format!("--{name}");
     args.iter().any(|a| a == &long)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn get_opt_space_and_equals_forms() {
+        let a = args(&["--source", "codex", "--target=claude"]);
+        assert_eq!(get_opt(&a, "source").as_deref(), Some("codex"));
+        assert_eq!(get_opt(&a, "target").as_deref(), Some("claude"));
+        assert_eq!(get_opt(&a, "missing"), None);
+    }
+
+    #[test]
+    fn has_flag_matches_exact_long() {
+        let a = args(&["--dry-run", "--source", "codex"]);
+        assert!(has_flag(&a, "dry-run"));
+        assert!(!has_flag(&a, "no-prune"));
+    }
+
+    #[test]
+    fn require_opt_errors_when_absent() {
+        assert!(require_opt(&args(&["--target", "claude"]), "source").is_err());
+        assert!(require_opt(&args(&["--source", "codex"]), "source").is_ok());
+    }
+}

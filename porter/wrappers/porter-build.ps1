@@ -19,6 +19,7 @@ function Get-PorterBin([string]$pluginRoot) {
     $cacheBase = Get-PorterFirstEnv @('CLAUDE_PLUGIN_DATA', 'PLUGIN_DATA', 'LOCALAPPDATA') (Join-Path $env:USERPROFILE '.cache')
     $dataDir = Join-Path $cacheBase 'auto-agent-plugin-porter'
     $binDir = Join-Path $dataDir 'bin'
+    $targetDir = Join-Path $dataDir 'target'
     $bin = Join-Path $binDir 'agent-porter.exe'
     $stamp = Join-Path $binDir '.src-sha'
     New-Item -ItemType Directory -Force -Path $binDir | Out-Null
@@ -55,15 +56,18 @@ function Get-PorterBin([string]$pluginRoot) {
             Write-Error 'agent-porter: Rust toolchain not found — install from https://rustup.rs.'
             return $null
         }
-        Write-Host 'agent-porter: building the porter binary (first run or source changed)…'
+        Write-Host 'agent-porter: building the porter binary (first run or source changed; this can take ~30-90s once)…'
+        # Build outside the (possibly read-only) plugin dir; CARGO_TARGET_DIR
+        # keeps incremental artifacts in the writable data dir across upgrades.
         Push-Location $crateDir
         try {
+            $env:CARGO_TARGET_DIR = $targetDir
             cargo build --release --quiet
             if ($LASTEXITCODE -ne 0) { Write-Error 'agent-porter: build failed.'; return $null }
         } finally {
             Pop-Location
         }
-        Copy-Item (Join-Path $crateDir 'target/release/agent-porter.exe') $bin -Force
+        Copy-Item (Join-Path $targetDir 'release/agent-porter.exe') $bin -Force
         Get-SrcHash | Set-Content -NoNewline $stamp
     }
     return $bin

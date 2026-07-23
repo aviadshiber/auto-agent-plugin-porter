@@ -7,7 +7,7 @@
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/porter-sync.sh\" --source codex --target claude",
-            "timeout": 120
+            "timeout": 300
           }
         ]
       }

@@ -17,6 +17,7 @@ porter_ensure_built() {
 
   local data_dir="${CLAUDE_PLUGIN_DATA:-${PLUGIN_DATA:-${XDG_CACHE_HOME:-${HOME:-${USERPROFILE:-/tmp}}/.cache}/auto-agent-plugin-porter}}"
   local bin_dir="$data_dir/bin"
+  local target_dir="$data_dir/target"
   PORTER_BIN="$bin_dir/agent-porter"
   local stamp="$bin_dir/.src-sha"
 
@@ -46,12 +47,16 @@ porter_ensure_built() {
       echo "agent-porter: Rust toolchain not found — install from https://rustup.rs to enable skill porting." >&2
       return 1
     fi
-    echo "agent-porter: building the porter binary (first run or source changed)…" >&2
-    if ! ( cd "$crate_dir" && cargo build --release --quiet ); then
+    echo "agent-porter: building the porter binary (first run or source changed; this can take ~30-90s once)…" >&2
+    # Build OUTSIDE the plugin dir: the plugin install/cache dir may be
+    # read-only, and its target/ would be thrown away on every plugin upgrade.
+    # CARGO_TARGET_DIR points at the (writable, persistent) data dir, so
+    # incremental artifacts survive across sessions and upgrades.
+    if ! ( cd "$crate_dir" && CARGO_TARGET_DIR="$target_dir" cargo build --release --quiet ); then
       echo "agent-porter: build failed." >&2
       return 1
     fi
-    cp "$crate_dir/target/release/agent-porter" "$PORTER_BIN"
+    cp "$target_dir/release/agent-porter" "$PORTER_BIN"
     _porter_src_hash > "$stamp"
   fi
   return 0

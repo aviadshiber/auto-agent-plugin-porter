@@ -98,7 +98,7 @@ pub fn install_codex_session_hook(opts: &InstallOptions) -> crate::Result<Instal
                     "type": "command",
                     "command": want_cmd,
                     "statusMessage": "Porting Claude skills into Codex",
-                    "timeout": 120
+                    "timeout": 300
                 }
             ]
         }));

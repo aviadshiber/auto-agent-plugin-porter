@@ -8,7 +8,8 @@ environment-dependent (documented inline).
 FIX-1 (YAML corruption) and FIX-2 (bootstrap claude_only round-trip) already have
 dedicated behavioral coverage in test_generate_manifests.py / test_bootstrap_registry.py.
 FIX-4/5/7 are covered in test_validate_registry.py / test_bump_registry_version.py /
-test_validate_sh.py / test_new_plugin.py. This file adds guards for FIX-3/6/8/9/10.
+test_validate_sh.py / test_new_plugin.py. This file adds guards for FIX-6/8/9/10
+(FIX-3 retired with the move from Jenkins to GitHub Actions).
 """
 from __future__ import annotations
 
@@ -84,15 +85,8 @@ def _stage(tmp_path: Path, scripts: list[str]) -> Path:
     return tmp_path
 
 
-# ── FIX-3 — Jenkins docker agent must declare a label (no-label → indefinite queue) ──
-def test_fix3_jenkinsfile_docker_agent_has_label():
-    txt = (_REPO / "Jenkinsfile").read_text()
-    m = re.search(r"docker\s*\{(.*?)\}", txt, re.S)
-    assert m, "no `docker { ... }` agent block found in Jenkinsfile"
-    assert re.search(r"\blabel\b", m.group(1)), (
-        "docker agent has no `label` — an unlabelled docker agent can queue "
-        "indefinitely and the run-level timeout does not bound queue time (FIX-3 regression)"
-    )
+# ── FIX-3 (Jenkins docker-agent label) retired: CI moved to GitHub Actions
+#    (.github/workflows/), which has no Jenkins docker-agent label to guard. ──
 
 
 # ── FIX-6 — validate.sh self-containment loop must be glob-safe ──

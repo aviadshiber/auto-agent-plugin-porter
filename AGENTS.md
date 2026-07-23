@@ -18,7 +18,7 @@ If you have not run it in this clone yet:
 
 This wires the pre-commit / pre-push / commit-msg hooks. Hooks are a local
 convenience and are bypassable (`git commit --no-verify`) and absent for web
-edits — the real merge gate is the Jenkins job (`Jenkinsfile`).
+edits — the real merge gate is GitHub Actions (`.github/workflows/ci.yml`).
 
 ## What this repo is
 
@@ -94,7 +94,9 @@ scripts/
   _is_codex_only.py               # helper (env-arg, injection-safe)
   tests/                          # pytest unit tests for the tooling
 .githooks/{pre-commit,pre-push,commit-msg}
-Jenkinsfile                       # server-side CI merge gate
+.github/workflows/ci.yml          # server-side CI merge gate (Python + Rust)
+porter/                           # canonical Rust porter crate + wrappers (vendored into plugins)
+scripts/sync-porter.sh            # vendor porter/ into each plugin (--check = drift gate)
 plugins/<name>/
   .claude-plugin/plugin.json      # GENERATED — Claude manifest (absent if codex_only)
   .codex-plugin/plugin.json       # GENERATED — Codex manifest (absent if claude_only)

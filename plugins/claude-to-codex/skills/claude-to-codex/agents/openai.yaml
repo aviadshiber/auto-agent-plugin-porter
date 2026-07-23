@@ -1,0 +1,5 @@
+interface:
+  display_name: "Claude → Codex porter"
+  short_description: "Mirror your Claude Code skills into Codex CLI, kept in sync every session."
+policy:
+  allow_implicit_invocation: true

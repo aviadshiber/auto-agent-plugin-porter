@@ -335,6 +335,36 @@ else
 fi
 
 # ─────────────────────────────────────────────
+header "14. Orphan per-target manifests (flag-flip leftovers)"
+# ─────────────────────────────────────────────
+# The generator writes but never deletes: flipping a plugin to claude_only /
+# codex_only leaves a stale manifest for the now-excluded target. `--check`
+# won't catch it (it only inspects paths it expects to exist), so guard it here:
+# a claude_only plugin must have NO .codex-plugin/plugin.json, and vice versa.
+orphan_out=$(REGISTRY="$REPO_ROOT/registry/plugins.json" PLUGINS_DIR="$PLUGINS_DIR" python3 -c '
+import json, os, sys
+reg = json.load(open(os.environ["REGISTRY"]))
+plugins_dir = os.environ["PLUGINS_DIR"]
+problems = []
+for p in reg["plugins"]:
+    name = p["name"]
+    codex_manifest = os.path.join(plugins_dir, name, ".codex-plugin", "plugin.json")
+    claude_manifest = os.path.join(plugins_dir, name, ".claude-plugin", "plugin.json")
+    if p.get("claude_only") and os.path.exists(codex_manifest):
+        problems.append(f"{name}: claude_only but a stale .codex-plugin/plugin.json exists (delete it)")
+    if p.get("codex_only") and os.path.exists(claude_manifest):
+        problems.append(f"{name}: codex_only but a stale .claude-plugin/plugin.json exists (delete it)")
+for pr in problems:
+    print(pr)
+' 2>&1 || echo "python3 error: orphan-manifest check failed unexpectedly")
+if [[ -z "$orphan_out" ]]; then
+    pass "No orphan per-target manifests"
+else
+    fail "Orphan manifests (a flag flip left a manifest for an excluded target):"
+    printf '    %s\n' "${orphan_out//$'\n'/$'\n    '}"
+fi
+
+# ─────────────────────────────────────────────
 header "SUMMARY"
 # ─────────────────────────────────────────────
 echo ""

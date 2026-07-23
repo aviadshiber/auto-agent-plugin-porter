@@ -1,0 +1,18 @@
+{
+  "name": "claude-to-codex",
+  "version": "0.1.0",
+  "description": "Run INSIDE OpenAI Codex CLI: mirror your Claude Code skills into Codex so they work natively — no duplicate authoring. One-time bootstrap installs a session-start hook (you approve it once); requires the Rust toolchain.",
+  "skills": "./skills/",
+  "keywords": [
+    "claude",
+    "codex",
+    "porter",
+    "skills",
+    "interop",
+    "session-start-hook"
+  ],
+  "interface": {
+    "displayName": "claude-to-codex",
+    "category": "Developer Tools"
+  }
+}

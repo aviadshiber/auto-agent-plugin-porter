@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # validate-registry.py — JSON Schema validation for registry/plugins.json.
 #
-# Used by scripts/validate-json.sh and the Jenkinsfile. Provides clear,
+# Used by scripts/validate-json.sh and the GitHub Actions CI. Provides clear,
 # contributor-friendly error messages on schema violations (unlike the
 # cryptic stack traces from raw `jsonschema` invocation).
 #

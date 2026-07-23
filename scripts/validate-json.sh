@@ -27,6 +27,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MARKETPLACE="$REPO_ROOT/.claude-plugin/marketplace.json"
 CODEX_MARKETPLACE="$REPO_ROOT/.agents/plugins/marketplace.json"
+REGISTRY_JSON="$REPO_ROOT/registry/plugins.json"
 PLUGINS_DIR="$REPO_ROOT/plugins"
 PASS=0
 FAIL=0
@@ -41,6 +42,20 @@ fail() { FAIL=$((FAIL + 1)); red   "  FAIL: $1"; }
 warn() { WARN=$((WARN + 1)); yellow "  WARN: $1"; }
 
 header() { printf '\n\033[1m=== %s ===\033[0m\n' "$1"; }
+
+# Per-target flags from the registry (exit 0 = true). Drive which per-plugin
+# manifest each plugin is expected to ship: a claude_only plugin has only a
+# Claude manifest, a codex_only plugin only a Codex manifest, otherwise both.
+is_claude_only() { PLUGIN_NAME="$1" REGISTRY="$REGISTRY_JSON" python3 "$REPO_ROOT/scripts/_is_claude_only.py"; }
+is_codex_only()  { PLUGIN_NAME="$1" REGISTRY="$REGISTRY_JSON" python3 "$REPO_ROOT/scripts/_is_codex_only.py"; }
+
+check_json_syntax() { # $1 = label, $2 = path
+    if VALIDATE_FILE="$2" python3 -c 'import json,os; json.load(open(os.environ["VALIDATE_FILE"]))' 2>/dev/null; then
+        pass "$1 is valid JSON"
+    else
+        fail "$1 has invalid JSON syntax"
+    fi
+}
 
 # Determine which plugins to check
 if [[ "${1:-}" != "" ]]; then
@@ -64,18 +79,34 @@ else
     fail "marketplace.json has invalid JSON syntax"
 fi
 
-# Each plugin.json
+# Each per-plugin manifest — expect the manifest(s) matching the plugin's
+# per-target flags (claude_only → Claude only; codex_only → Codex only; else both).
 for plugin_dir in "${PLUGIN_DIRS[@]}"; do
     name=$(basename "$plugin_dir")
-    pjson="${plugin_dir}.claude-plugin/plugin.json"
-    if [[ -f "$pjson" ]]; then
-        if VALIDATE_FILE="$pjson" python3 -c 'import json,os; json.load(open(os.environ["VALIDATE_FILE"]))' 2>/dev/null; then
-            pass "[$name] plugin.json is valid JSON"
-        else
-            fail "[$name] plugin.json has invalid JSON syntax"
-        fi
+    claude_json="${plugin_dir}.claude-plugin/plugin.json"
+    codex_json="${plugin_dir}.codex-plugin/plugin.json"
+
+    if is_codex_only "$name"; then
+        want_claude=0; want_codex=1
+    elif is_claude_only "$name"; then
+        want_claude=1; want_codex=0
     else
-        fail "[$name] .claude-plugin/plugin.json not found"
+        want_claude=1; want_codex=1
+    fi
+
+    if [[ "$want_claude" -eq 1 ]]; then
+        if [[ -f "$claude_json" ]]; then
+            check_json_syntax "[$name] .claude-plugin/plugin.json" "$claude_json"
+        else
+            fail "[$name] .claude-plugin/plugin.json not found"
+        fi
+    fi
+    if [[ "$want_codex" -eq 1 ]]; then
+        if [[ -f "$codex_json" ]]; then
+            check_json_syntax "[$name] .codex-plugin/plugin.json" "$codex_json"
+        else
+            fail "[$name] .codex-plugin/plugin.json not found"
+        fi
     fi
 done
 

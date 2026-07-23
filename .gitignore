@@ -1,0 +1,41 @@
+# Python tooling caches
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local virtual environments
+.venv/
+venv/
+env/
+.env
+*.env
+
+# Rust / Cargo build artifacts (the porter crate is compiled on the user's
+# machine at first session start — never commit compiled output)
+target/
+**/target/
+*.rs.bk
+# Cargo.lock IS committed for the binary crate (reproducible builds)
+
+# Editor / OS cruft
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+.vscode/
+
+# Secrets & local credentials — never commit
+*.pem
+*.key
+id_rsa*
+credentials.json
+auth.json
+*.token
+
+# Porter runtime state / caches (written under *_PLUGIN_DATA at runtime, but
+# guard against stray copies landing in the repo)
+.porter-cache/
+*.porter-state.json

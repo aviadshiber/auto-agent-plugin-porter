@@ -1,0 +1,13 @@
+{
+  "marketplace": {
+    "name": "auto-agent-plugin-porter",
+    "owner": {
+      "name": "Aviad Shiber",
+      "email": "aviad.s@taboola.com"
+    },
+    "description": "Port skills, plugins, and hooks between Claude Code and OpenAI Codex CLI automatically, from a single source of truth, with no double maintenance. Install the porter for your agent and the other agent's skills appear natively on every session start.",
+    "version": "0.1.0",
+    "pluginRoot": "./plugins"
+  },
+  "plugins": []
+}

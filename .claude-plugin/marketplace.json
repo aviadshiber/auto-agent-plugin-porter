@@ -6,7 +6,7 @@
   },
   "metadata": {
     "description": "Port skills, plugins, and hooks between Claude Code and OpenAI Codex CLI automatically, from a single source of truth, with no double maintenance. Install the porter for your agent and the other agent's skills appear natively on every session start.",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "pluginRoot": "./plugins"
   },
   "plugins": [
@@ -14,7 +14,7 @@
       "name": "codex-to-claude",
       "source": "./plugins/codex-to-claude",
       "description": "Run INSIDE Claude Code: on every session start, mirror your OpenAI Codex CLI skills into Claude so they work natively \u2014 no duplicate authoring. Requires the Rust toolchain (builds a fast porter binary on first run).",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "keywords": [
         "codex",
         "claude",

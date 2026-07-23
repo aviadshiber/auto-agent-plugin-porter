@@ -15,8 +15,21 @@ pub struct Marker {
     pub ported_by: String,
     pub source_agent: String,
     pub source_name: String,
-    pub source_hash: String,
+    pub render_hash: String,
     pub porter_version: String,
+}
+
+/// Typed inputs for the generated mirror frontmatter. Keeping these together
+/// makes the render plan and writer share one output contract.
+pub struct MirrorFrontmatter<'a> {
+    pub mirror_name: &'a str,
+    pub description: &'a str,
+    pub target: Agent,
+    pub implicit_allowed: bool,
+    pub allowed_tools: Option<&'a Value>,
+    pub source_agent: Agent,
+    pub source_name: &'a str,
+    pub render_hash: &'a str,
 }
 
 /// Split raw SKILL.md text into `(frontmatter_yaml, body)`. Returns `None` when
@@ -62,7 +75,7 @@ pub fn marker(m: &Mapping) -> Option<Marker> {
         ported_by,
         source_agent: get_str(meta, "source_agent").unwrap_or_default(),
         source_name: get_str(meta, "source_name").unwrap_or_default(),
-        source_hash: get_str(meta, "source_hash").unwrap_or_default(),
+        render_hash: get_str(meta, "render_hash").unwrap_or_default(),
         porter_version: get_str(meta, "porter_version").unwrap_or_default(),
     })
 }
@@ -87,26 +100,19 @@ pub fn render(fm: &Mapping, body: &str) -> crate::Result<String> {
 /// `disable-model-invocation` (only emitted when auto-invocation is *off*, to
 /// keep the common case clean); for a Codex target it is carried in
 /// `agents/openai.yaml` instead (see [`build_openai_yaml`]).
-#[allow(clippy::too_many_arguments)]
-pub fn build_mirror_frontmatter(
-    mirror_name: &str,
-    description: &str,
-    target: Agent,
-    implicit_allowed: bool,
-    allowed_tools: Option<Value>,
-    source_agent: Agent,
-    source_name: &str,
-    source_hash: &str,
-) -> Mapping {
+pub fn build_mirror_frontmatter(input: &MirrorFrontmatter<'_>) -> Mapping {
     let mut fm = Mapping::new();
-    fm.insert(key("name"), Value::String(mirror_name.to_string()));
-    fm.insert(key("description"), Value::String(description.to_string()));
+    fm.insert(key("name"), Value::String(input.mirror_name.to_string()));
+    fm.insert(
+        key("description"),
+        Value::String(input.description.to_string()),
+    );
 
-    if target == Agent::Claude {
-        if let Some(tools) = allowed_tools {
-            fm.insert(key("allowed-tools"), tools);
+    if input.target == Agent::Claude {
+        if let Some(tools) = input.allowed_tools {
+            fm.insert(key("allowed-tools"), tools.clone());
         }
-        if !implicit_allowed {
+        if !input.implicit_allowed {
             fm.insert(key("disable-model-invocation"), Value::Bool(true));
         }
     }
@@ -122,23 +128,25 @@ pub fn build_mirror_frontmatter(
     );
     meta.insert(
         key("source_agent"),
-        Value::String(source_agent.as_str().to_string()),
+        Value::String(input.source_agent.as_str().to_string()),
     );
-    meta.insert(key("source_name"), Value::String(source_name.to_string()));
-    meta.insert(key("source_hash"), Value::String(source_hash.to_string()));
+    meta.insert(
+        key("source_name"),
+        Value::String(input.source_name.to_string()),
+    );
+    meta.insert(
+        key("render_hash"),
+        Value::String(input.render_hash.to_string()),
+    );
     fm.insert(key("metadata"), Value::Mapping(meta));
 
     fm
 }
 
-/// Build the Codex `agents/openai.yaml` for a ported skill: UI metadata plus the
-/// implicit-invocation policy (the Codex counterpart to Claude's
-/// `disable-model-invocation`).
-pub fn build_openai_yaml(
-    display_name: &str,
-    description: &str,
-    implicit_allowed: bool,
-) -> crate::Result<String> {
+/// Build the optional Codex `agents/openai.yaml` for a ported skill whose
+/// invocation policy is non-default. Ordinary skills omit this file entirely
+/// to keep large skill-corpus reloads lean.
+pub fn build_openai_yaml(display_name: &str, description: &str) -> crate::Result<String> {
     let mut interface = Mapping::new();
     interface.insert(key("display_name"), Value::String(display_name.to_string()));
     interface.insert(
@@ -147,10 +155,7 @@ pub fn build_openai_yaml(
     );
 
     let mut policy = Mapping::new();
-    policy.insert(
-        key("allow_implicit_invocation"),
-        Value::Bool(implicit_allowed),
-    );
+    policy.insert(key("allow_implicit_invocation"), Value::Bool(false));
 
     let mut root = Mapping::new();
     root.insert(key("interface"), Value::Mapping(interface));
@@ -193,56 +198,56 @@ mod tests {
 
     #[test]
     fn marker_round_trips() {
-        let fm = build_mirror_frontmatter(
-            "codex-foo",
-            "desc",
-            Agent::Claude,
-            true,
-            None,
-            Agent::Codex,
-            "foo",
-            "abc123",
-        );
+        let fm = build_mirror_frontmatter(&MirrorFrontmatter {
+            mirror_name: "codex-foo",
+            description: "desc",
+            target: Agent::Claude,
+            implicit_allowed: true,
+            allowed_tools: None,
+            source_agent: Agent::Codex,
+            source_name: "foo",
+            render_hash: "render123",
+        });
         assert!(is_ported(&fm));
         let mk = marker(&fm).unwrap();
         assert_eq!(mk.source_agent, "codex");
         assert_eq!(mk.source_name, "foo");
-        assert_eq!(mk.source_hash, "abc123");
+        assert_eq!(mk.render_hash, "render123");
     }
 
     #[test]
     fn claude_target_emits_disable_when_implicit_off() {
-        let fm = build_mirror_frontmatter(
-            "codex-foo",
-            "d",
-            Agent::Claude,
-            false,
-            None,
-            Agent::Codex,
-            "foo",
-            "h",
-        );
+        let fm = build_mirror_frontmatter(&MirrorFrontmatter {
+            mirror_name: "codex-foo",
+            description: "d",
+            target: Agent::Claude,
+            implicit_allowed: false,
+            allowed_tools: None,
+            source_agent: Agent::Codex,
+            source_name: "foo",
+            render_hash: "r",
+        });
         assert_eq!(get_bool(&fm, "disable-model-invocation"), Some(true));
     }
 
     #[test]
     fn codex_target_omits_disable_key() {
-        let fm = build_mirror_frontmatter(
-            "claude-foo",
-            "d",
-            Agent::Codex,
-            false,
-            None,
-            Agent::Claude,
-            "foo",
-            "h",
-        );
+        let fm = build_mirror_frontmatter(&MirrorFrontmatter {
+            mirror_name: "claude-foo",
+            description: "d",
+            target: Agent::Codex,
+            implicit_allowed: false,
+            allowed_tools: None,
+            source_agent: Agent::Claude,
+            source_name: "foo",
+            render_hash: "r",
+        });
         assert_eq!(get_bool(&fm, "disable-model-invocation"), None);
     }
 
     #[test]
     fn openai_yaml_reflects_policy() {
-        let y = build_openai_yaml("claude-foo", "d", false).unwrap();
+        let y = build_openai_yaml("claude-foo", "d").unwrap();
         assert!(y.contains("allow_implicit_invocation: false"));
         assert!(y.contains("display_name: claude-foo"));
     }

@@ -77,6 +77,9 @@ fn cmd_sync(args: &[String]) -> agent_porter::Result<ExitCode> {
 
     if !has_flag(args, "quiet") {
         eprintln!("{}", report.summary(source, target));
+        if let Some(notice) = report.description_compaction_notice() {
+            eprintln!("{notice}");
+        }
     }
     for e in &report.errors {
         eprintln!("agent-porter: warning: {e}");

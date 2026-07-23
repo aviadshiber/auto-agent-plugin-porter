@@ -1,5 +1,5 @@
 {
   "name": "codex-to-claude",
   "description": "Run INSIDE Claude Code: on every session start, mirror your OpenAI Codex CLI skills into Claude so they work natively \u2014 no duplicate authoring. Requires the Rust toolchain (builds a fast porter binary on first run).",
-  "version": "0.1.0"
+  "version": "0.2.0"
 }

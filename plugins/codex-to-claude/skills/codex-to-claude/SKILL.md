@@ -32,8 +32,8 @@ The sync is:
 
 - **One-way** (Codex → Claude). The mirror is *generated*; never hand-edit it —
   edit the source skill in Codex and let the next session re-sync.
-- **Hash-gated** — a skill is rewritten only when its source content changes, so
-  the steady-state session-start cost is negligible.
+- **Hash-gated** — a skill is rewritten only when its effective generated
+  output changes, so the steady-state session-start cost is negligible.
 - **Loop-safe** — every mirror carries a `metadata.ported_by` marker. The porter
   skips any source already carrying it, so a skill ported the other way
   (claude → codex) is never ported back into a duplicate.

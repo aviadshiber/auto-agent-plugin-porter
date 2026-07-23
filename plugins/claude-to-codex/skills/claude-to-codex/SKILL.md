@@ -50,9 +50,12 @@ directory, with the frontmatter translated to Codex's dialect. An optional
 `agents/openai.yaml` is generated only when needed to preserve a non-default
 invocation policy (Claude's `disable-model-invocation` becomes
 `policy.allow_implicit_invocation: false`).
-For large collections, generated descriptions share a fair 8,000-character
-budget so they fit alongside native and plugin skills in Codex's skills-context
-allocation. The sync reports compaction when it writes affected mirrors.
+For large collections, implicitly invokable generated descriptions share a fair
+8,000-character soft target to reduce pressure on Codex's dynamic
+skills-context allocation; manual-only skills do not consume it. This cannot
+guarantee a fit because Codex budgets the complete active catalog; set
+`AGENT_PORTER_CODEX_DESCRIPTION_TARGET_CHARS` to a positive integer to tune the
+target. The sync reports compaction when it writes affected mirrors.
 
 The sync is one-way (Claude → Codex), **hash-gated** (only effective generated
 changes are rewritten), **loop-safe** (mirrors carry a

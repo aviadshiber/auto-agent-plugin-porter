@@ -58,10 +58,14 @@ dialect (Claude `disable-model-invocation` ⇄ Codex
 `agents/openai.yaml: policy.allow_implicit_invocation`) and copying the rest of
 the skill directory verbatim. Codex metadata is sparse by design: ordinary
 skills need only `SKILL.md`; `agents/openai.yaml` is emitted only when it must
-carry a non-default invocation policy. Generated Codex descriptions share an
-8,000-character budget, distributed fairly across the mirrored corpus, so a
-large Claude skill collection does not overwhelm Codex's 2% skills-context
-budget.
+carry a non-default invocation policy. Generated, implicitly invokable Codex
+descriptions share an 8,000-character soft target, distributed fairly across
+the mirrored discovery corpus, to reduce pressure on Codex's dynamic
+skills-context allocation. Manual-only skills are excluded because Codex does
+not expose them for implicit discovery. This is not a guarantee: Codex budgets
+the complete active skill catalog as a percentage of the current model context,
+which the session hook cannot observe. Override the porter target with
+`AGENT_PORTER_CODEX_DESCRIPTION_TARGET_CHARS`.
 
 The sync is safe by construction:
 
@@ -83,12 +87,14 @@ The sync is safe by construction:
   `CODEX_HOME` (falling back to `~/.claude` / `~/.codex`, or `%USERPROFILE%` on
   Windows).
 
-After upgrading from `0.1.0` or `0.1.1`, run the `claude-to-codex` bootstrap
-once more. The `0.1.2` porter re-renders existing mirrors with sparse Codex
-metadata and budgeted descriptions, reducing file-descriptor and skills-context
-pressure when Codex reloads a large skill collection. When compaction occurs,
-the sync reports how many descriptions were shortened and the before/after
-character totals; unchanged session starts stay quiet.
+After upgrading from an earlier release, run the `claude-to-codex` bootstrap
+once more. The `0.2.0` porter re-renders existing mirrors with sparse Codex
+metadata, a single output-derived hash, and configurable compacted
+descriptions, reducing file-descriptor and skills-context pressure when Codex
+reloads a large skill collection. When compaction causes mirror writes, the
+sync warns with the number of compacted mirrors written now plus the current
+corpus-wide shortened count, before/after character totals, soft target, and
+any budget retained for malformed sources; unchanged session starts stay quiet.
 
 ## Scope of this release
 

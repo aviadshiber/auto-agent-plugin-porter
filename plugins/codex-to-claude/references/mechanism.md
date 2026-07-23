@@ -34,13 +34,12 @@ metadata:
   porter_version: <crate version>
   source_agent: codex
   source_name: <original skill dir name>
-  source_hash: <sha-256 of the entire source skill directory>
   render_hash: <sha-256 of the effective generated mirror inputs>
 ```
 
-- **`source_hash`** records the raw source snapshot for diagnostics.
 - **`render_hash`** drives the incremental fast path: unchanged effective
-  generated output → skip.
+  generated output → skip. It covers the canonical generated frontmatter,
+  translated policy, body, and copied files in one source-tree pass.
 - **`ported_by`** drives loop-safety and non-clobber: the enumerator skips any
   *source* carrying it (so a claude→codex mirror is never re-ported), and the
   writer refuses to overwrite a *target* that lacks it (so your own skills are

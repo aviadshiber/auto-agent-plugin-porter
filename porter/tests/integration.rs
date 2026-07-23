@@ -278,16 +278,74 @@ fn claude_to_codex_large_corpus_emits_sparse_policy_metadata() {
     }
     assert_eq!(metadata_count, SKILL_COUNT / POLICY_STRIDE);
     assert!(
-        description_chars <= 8_000,
-        "generated descriptions exceeded aggregate budget: {description_chars}"
+        description_chars > 8_000,
+        "manual-only descriptions are intentionally outside the discovery target"
     );
     let notice = report.description_compaction_notice().unwrap();
-    assert!(notice.contains("compacted 64 Codex skill descriptions"));
-    assert!(notice.contains("skills-context budget"));
+    assert!(notice.contains("60 synced Codex mirror(s) use compacted descriptions"));
+    assert!(notice.contains("corpus has 60 shortened descriptions"));
+    assert!(notice.contains("soft target: 8000"));
     let compaction = report.description_compaction.as_ref().unwrap();
-    assert_eq!(compaction.shortened_count, SKILL_COUNT);
+    assert_eq!(
+        compaction.shortened_count,
+        SKILL_COUNT - SKILL_COUNT / POLICY_STRIDE
+    );
     assert!(compaction.original_chars > compaction.rendered_chars);
-    assert_eq!(compaction.rendered_chars, description_chars);
+    assert_eq!(compaction.rendered_chars, 8_000);
+    assert_eq!(compaction.target_chars, 8_000);
+    assert_eq!(compaction.retained_chars, 0);
+    assert_eq!(
+        compaction.written_count,
+        SKILL_COUNT - SKILL_COUNT / POLICY_STRIDE
+    );
+}
+
+#[test]
+fn manual_only_skills_do_not_consume_implicit_description_target() {
+    let src = tempfile::tempdir().unwrap();
+    let dst = tempfile::tempdir().unwrap();
+    let long_description = "routing ".repeat(900);
+    for name in ["alpha", "beta"] {
+        make_skill(
+            src.path(),
+            name,
+            &format!("name: {name}\ndescription: {long_description}"),
+            "body\n",
+            &[],
+        );
+    }
+    make_skill(
+        src.path(),
+        "manual",
+        &format!("name: manual\ndescription: {long_description}\ndisable-model-invocation: true"),
+        "body\n",
+        &[],
+    );
+
+    let report = sync(&opts(Agent::Claude, Agent::Codex, src.path(), dst.path())).unwrap();
+    let alpha = frontmatter::get_str(
+        &mirror_frontmatter(&dst.path().join("skills/claude-alpha")),
+        "description",
+    )
+    .unwrap();
+    let beta = frontmatter::get_str(
+        &mirror_frontmatter(&dst.path().join("skills/claude-beta")),
+        "description",
+    )
+    .unwrap();
+    let manual = frontmatter::get_str(
+        &mirror_frontmatter(&dst.path().join("skills/claude-manual")),
+        "description",
+    )
+    .unwrap();
+
+    assert_eq!(alpha.chars().count(), 4_000);
+    assert_eq!(beta.chars().count(), 4_000);
+    assert_eq!(manual, long_description.trim());
+    let compaction = report.description_compaction.unwrap();
+    assert_eq!(compaction.shortened_count, 2);
+    assert_eq!(compaction.rendered_chars, 8_000);
+    assert_eq!(compaction.written_count, 2);
 }
 
 #[test]
@@ -313,8 +371,7 @@ fn codex_description_budget_changes_participate_in_render_hash() {
     let description_before = frontmatter::get_str(&alpha_before, "description").unwrap();
 
     // A sibling skill changes alpha's fair share without changing alpha's
-    // source directory. The render hash must therefore force alpha to update
-    // while its source hash remains stable.
+    // source directory. The render hash must therefore force alpha to update.
     make_skill(
         src.path(),
         "gamma",
@@ -332,9 +389,58 @@ fn codex_description_budget_changes_participate_in_render_hash() {
     let alpha_after = mirror_frontmatter(&dst.path().join("skills/claude-alpha"));
     let marker_after = frontmatter::marker(&alpha_after).unwrap();
     let description_after = frontmatter::get_str(&alpha_after, "description").unwrap();
-    assert_eq!(marker_before.source_hash, marker_after.source_hash);
     assert_ne!(marker_before.render_hash, marker_after.render_hash);
     assert!(description_after.chars().count() < description_before.chars().count());
+}
+
+#[test]
+fn claude_policy_false_true_false_updates_exact_codex_outputs_and_hashes() {
+    let src = tempfile::tempdir().unwrap();
+    let dst = tempfile::tempdir().unwrap();
+    make_skill(
+        src.path(),
+        "toggle",
+        "name: toggle\ndescription: A toggleable skill",
+        "body\n",
+        &[],
+    );
+
+    let first = sync(&opts(Agent::Claude, Agent::Codex, src.path(), dst.path())).unwrap();
+    assert_eq!(first.created, vec!["claude-toggle".to_string()]);
+    let mirror = dst.path().join("skills/claude-toggle");
+    assert!(!mirror.join("agents/openai.yaml").exists());
+    let first_hash = frontmatter::marker(&mirror_frontmatter(&mirror))
+        .unwrap()
+        .render_hash;
+
+    fs::write(
+        src.path().join("skills/toggle/SKILL.md"),
+        "---\nname: toggle\ndescription: A toggleable skill\ndisable-model-invocation: true\n---\nbody\n",
+    )
+    .unwrap();
+    let second = sync(&opts(Agent::Claude, Agent::Codex, src.path(), dst.path())).unwrap();
+    assert_eq!(second.updated, vec!["claude-toggle".to_string()]);
+    assert_eq!(
+        read(mirror.join("agents/openai.yaml")),
+        "interface:\n  display_name: claude-toggle\n  short_description: A toggleable skill\npolicy:\n  allow_implicit_invocation: false\n"
+    );
+    let second_hash = frontmatter::marker(&mirror_frontmatter(&mirror))
+        .unwrap()
+        .render_hash;
+    assert_ne!(first_hash, second_hash);
+
+    fs::write(
+        src.path().join("skills/toggle/SKILL.md"),
+        "---\nname: toggle\ndescription: A toggleable skill\ndisable-model-invocation: false\n---\nbody\n",
+    )
+    .unwrap();
+    let third = sync(&opts(Agent::Claude, Agent::Codex, src.path(), dst.path())).unwrap();
+    assert_eq!(third.updated, vec!["claude-toggle".to_string()]);
+    assert!(!mirror.join("agents/openai.yaml").exists());
+    let third_hash = frontmatter::marker(&mirror_frontmatter(&mirror))
+        .unwrap()
+        .render_hash;
+    assert_eq!(first_hash, third_hash);
 }
 
 #[test]
@@ -372,6 +478,97 @@ fn changes_beyond_compacted_description_are_hash_noop() {
     assert!(
         report.description_compaction_notice().is_none(),
         "an effective no-op must not warn or rewrite"
+    );
+}
+
+#[test]
+fn malformed_source_reserves_retained_mirror_description_budget() {
+    let src = tempfile::tempdir().unwrap();
+    let dst = tempfile::tempdir().unwrap();
+    let long_description = "routing ".repeat(900);
+    for name in ["alpha", "broken"] {
+        make_skill(
+            src.path(),
+            name,
+            &format!("name: {name}\ndescription: {long_description}"),
+            "body\n",
+            &[],
+        );
+    }
+
+    let first = sync(&opts(Agent::Claude, Agent::Codex, src.path(), dst.path())).unwrap();
+    assert_eq!(first.created.len(), 2);
+    let alpha_path = dst.path().join("skills/claude-alpha");
+    let broken_path = dst.path().join("skills/claude-broken");
+    let alpha_before = read(alpha_path.join("SKILL.md"));
+    let broken_before = read(broken_path.join("SKILL.md"));
+    assert_eq!(
+        frontmatter::get_str(&mirror_frontmatter(&alpha_path), "description")
+            .unwrap()
+            .chars()
+            .count(),
+        4_000
+    );
+
+    fs::write(
+        src.path().join("skills/broken/SKILL.md"),
+        "not valid skill frontmatter\n",
+    )
+    .unwrap();
+    let second = sync(&opts(Agent::Claude, Agent::Codex, src.path(), dst.path())).unwrap();
+    assert!(second.errors.iter().any(|error| error.contains("broken")));
+    assert_eq!(second.unchanged, vec!["claude-alpha".to_string()]);
+    assert_eq!(read(alpha_path.join("SKILL.md")), alpha_before);
+    assert_eq!(read(broken_path.join("SKILL.md")), broken_before);
+    let compaction = second.description_compaction.as_ref().unwrap();
+    assert_eq!(compaction.retained_chars, 4_000);
+    assert_eq!(compaction.rendered_chars, 8_000);
+    assert!(
+        second.description_compaction_notice().is_none(),
+        "a retained no-op must not print a sync warning"
+    );
+}
+
+#[test]
+fn prune_only_change_does_not_print_compaction_notice() {
+    let src = tempfile::tempdir().unwrap();
+    let dst = tempfile::tempdir().unwrap();
+    let long_description = "routing ".repeat(900);
+    for name in ["alpha", "beta"] {
+        make_skill(
+            src.path(),
+            name,
+            &format!("name: {name}\ndescription: {long_description}"),
+            "body\n",
+            &[],
+        );
+    }
+    sync(&opts(Agent::Claude, Agent::Codex, src.path(), dst.path())).unwrap();
+
+    make_skill(
+        dst.path(),
+        "claude-gone",
+        "name: claude-gone\ndescription: stale\nmetadata:\n  ported_by: auto-agent-plugin-porter\n  porter_version: 0.2.0\n  source_agent: claude\n  source_name: gone\n  render_hash: stale",
+        "body\n",
+        &[],
+    );
+    let report = sync(&opts(Agent::Claude, Agent::Codex, src.path(), dst.path())).unwrap();
+    assert_eq!(report.pruned, vec!["claude-gone".to_string()]);
+    assert_eq!(
+        report.unchanged,
+        vec!["claude-alpha".to_string(), "claude-beta".to_string()]
+    );
+    assert_eq!(
+        report
+            .description_compaction
+            .as_ref()
+            .unwrap()
+            .written_count,
+        0
+    );
+    assert!(
+        report.description_compaction_notice().is_none(),
+        "pruning alone must not claim compacted mirrors were written"
     );
 }
 
@@ -684,4 +881,91 @@ fn cli_rejects_same_source_and_target() {
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("different agents"), "stderr was: {stderr}");
+}
+
+#[test]
+fn cli_warns_only_when_compacted_mirrors_are_written_and_respects_quiet() {
+    let src = tempfile::tempdir().unwrap();
+    let dst = tempfile::tempdir().unwrap();
+    for name in ["alpha", "beta"] {
+        make_skill(
+            src.path(),
+            name,
+            &format!("name: {name}\ndescription: {}", "routing ".repeat(20)),
+            "body\n",
+            &[],
+        );
+    }
+
+    let run = |quiet: bool| {
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_agent-porter"));
+        command
+            .env("AGENT_PORTER_CODEX_DESCRIPTION_TARGET_CHARS", "40")
+            .args([
+                "sync",
+                "--source",
+                "claude",
+                "--target",
+                "codex",
+                "--source-dir",
+                src.path().to_str().unwrap(),
+                "--target-dir",
+                dst.path().to_str().unwrap(),
+            ]);
+        if quiet {
+            command.arg("--quiet");
+        }
+        command.output().unwrap()
+    };
+
+    let first = run(false);
+    assert!(first.status.success());
+    let first_stderr = String::from_utf8_lossy(&first.stderr);
+    assert!(
+        first_stderr.contains("2 synced Codex mirror(s)"),
+        "stderr was: {first_stderr}"
+    );
+    assert!(first_stderr.contains("corpus has 2 shortened descriptions"));
+    assert!(first_stderr.contains("soft target: 40"));
+
+    let second = run(false);
+    assert!(second.status.success());
+    let second_stderr = String::from_utf8_lossy(&second.stderr);
+    assert!(
+        !second_stderr.contains("compacted"),
+        "unchanged sync warned: {second_stderr}"
+    );
+
+    fs::write(
+        src.path().join("skills/alpha/SKILL.md"),
+        format!(
+            "---\nname: alpha\ndescription: {}\n---\nchanged body\n",
+            "routing ".repeat(20)
+        ),
+    )
+    .unwrap();
+    let third = run(false);
+    assert!(third.status.success());
+    let third_stderr = String::from_utf8_lossy(&third.stderr);
+    assert!(
+        third_stderr.contains("1 synced Codex mirror(s)"),
+        "body-only update warning was: {third_stderr}"
+    );
+    assert!(third_stderr.contains("corpus has 2 shortened descriptions"));
+
+    fs::write(
+        src.path().join("skills/alpha/SKILL.md"),
+        format!(
+            "---\nname: alpha\ndescription: {}\n---\nquiet body\n",
+            "routing ".repeat(20)
+        ),
+    )
+    .unwrap();
+    let fourth = run(true);
+    assert!(fourth.status.success());
+    assert!(
+        String::from_utf8_lossy(&fourth.stderr).is_empty(),
+        "--quiet emitted stderr: {}",
+        String::from_utf8_lossy(&fourth.stderr)
+    );
 }

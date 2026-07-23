@@ -66,6 +66,11 @@ did not create). A Claude skill `foo` becomes the Codex skill `claude-foo`.
 | auto-invocation off | `disable-model-invocation: true` | `agents/openai.yaml` → `policy.allow_implicit_invocation: false` |
 | body + `references/` etc. | copied verbatim | copied verbatim |
 
+`agents/openai.yaml` is optional and is emitted only for the non-default
+auto-invocation-off case. Ordinary Codex mirrors use `SKILL.md` alone. Keeping
+this metadata sparse reduces the number of files Codex opens concurrently when
+it hot-reloads a large user skill collection.
+
 ## Troubleshooting
 
 - **Nothing syncs after install** — you must run the bootstrap once (see
@@ -76,6 +81,9 @@ did not create). A Claude skill `foo` becomes the Codex skill `claude-foo`.
   whose command ends in `--source claude --target codex`, and that you approved
   the trust prompt.
 - **After a plugin upgrade** — re-run the bootstrap to rebuild + refresh.
+- **Codex reports `Too many open files` after upgrading from `0.1.0`** — run
+  the bootstrap again so porter `0.1.1+` rebuilds the mirrors with sparse Codex
+  metadata, then restart Codex once.
 - **Remove the hook** — edit `~/.codex/hooks.json` and delete the porter
   `SessionStart` entry.
 

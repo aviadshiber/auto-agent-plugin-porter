@@ -195,6 +195,113 @@ fn claude_to_codex_emits_openai_yaml_with_policy() {
 }
 
 #[test]
+fn claude_to_codex_omits_redundant_openai_yaml_for_default_policy() {
+    let src = tempfile::tempdir().unwrap();
+    let dst = tempfile::tempdir().unwrap();
+    make_skill(
+        src.path(),
+        "ordinary",
+        "name: ordinary\ndescription: An ordinary implicitly invokable skill",
+        "body\n",
+        &[],
+    );
+
+    let report = sync(&opts(Agent::Claude, Agent::Codex, src.path(), dst.path())).unwrap();
+    assert_eq!(report.created, vec!["claude-ordinary".to_string()]);
+
+    let mirror = dst.path().join("skills/claude-ordinary");
+    assert!(mirror.join("SKILL.md").is_file());
+    assert!(
+        !mirror.join("agents/openai.yaml").exists(),
+        "default Codex policy must not create optional metadata"
+    );
+}
+
+#[test]
+fn claude_to_codex_large_corpus_emits_sparse_policy_metadata() {
+    const SKILL_COUNT: usize = 64;
+    const POLICY_STRIDE: usize = 16;
+
+    let src = tempfile::tempdir().unwrap();
+    let dst = tempfile::tempdir().unwrap();
+
+    for index in 0..SKILL_COUNT {
+        let name = format!("skill-{index:02}");
+        let frontmatter = if index % POLICY_STRIDE == 0 {
+            format!(
+                "name: {name}\ndescription: Manual-only corpus skill {index}\ndisable-model-invocation: true"
+            )
+        } else {
+            format!("name: {name}\ndescription: Ordinary corpus skill {index}")
+        };
+        make_skill(src.path(), &name, &frontmatter, "body\n", &[]);
+    }
+
+    let report = sync(&opts(Agent::Claude, Agent::Codex, src.path(), dst.path())).unwrap();
+    assert_eq!(report.created.len(), SKILL_COUNT);
+    assert!(
+        report.errors.is_empty(),
+        "unexpected errors: {:?}",
+        report.errors
+    );
+
+    let mut metadata_count = 0;
+    for index in 0..SKILL_COUNT {
+        let mirror = dst
+            .path()
+            .join("skills")
+            .join(format!("claude-skill-{index:02}"));
+        assert!(
+            mirror.join("SKILL.md").is_file(),
+            "missing mirror for corpus skill {index}"
+        );
+        if mirror.join("agents/openai.yaml").is_file() {
+            metadata_count += 1;
+        }
+    }
+    assert_eq!(metadata_count, SKILL_COUNT / POLICY_STRIDE);
+}
+
+#[test]
+fn upgrade_rerender_removes_stale_default_openai_yaml() {
+    let src = tempfile::tempdir().unwrap();
+    let dst = tempfile::tempdir().unwrap();
+    make_skill(
+        src.path(),
+        "ordinary",
+        "name: ordinary\ndescription: An ordinary implicitly invokable skill",
+        "body\n",
+        &[],
+    );
+
+    sync(&opts(Agent::Claude, Agent::Codex, src.path(), dst.path())).unwrap();
+    let mirror = dst.path().join("skills/claude-ordinary");
+    let skill_path = mirror.join("SKILL.md");
+
+    // Simulate the 0.1.0 rendering: every Codex mirror carried openai.yaml,
+    // and the marker's old porter version forces an upgrade re-render.
+    fs::create_dir_all(mirror.join("agents")).unwrap();
+    fs::write(
+        mirror.join("agents/openai.yaml"),
+        "policy:\n  allow_implicit_invocation: true\n",
+    )
+    .unwrap();
+    let stale = read(skill_path.clone()).replace(
+        &format!("porter_version: {}", env!("CARGO_PKG_VERSION")),
+        "porter_version: 0.1.0",
+    );
+    fs::write(&skill_path, stale).unwrap();
+
+    let report = sync(&opts(Agent::Claude, Agent::Codex, src.path(), dst.path())).unwrap();
+    assert_eq!(report.updated, vec!["claude-ordinary".to_string()]);
+    assert!(
+        !mirror.join("agents/openai.yaml").exists(),
+        "upgrade re-render must remove redundant 0.1.0 metadata"
+    );
+    assert!(read(skill_path).contains(&format!("porter_version: {}", env!("CARGO_PKG_VERSION"))));
+}
+
+#[test]
 fn missing_source_skills_dir_is_a_noop() {
     let src = tempfile::tempdir().unwrap();
     let dst = tempfile::tempdir().unwrap();

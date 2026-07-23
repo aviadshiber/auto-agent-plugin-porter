@@ -131,14 +131,10 @@ pub fn build_mirror_frontmatter(
     fm
 }
 
-/// Build the Codex `agents/openai.yaml` for a ported skill: UI metadata plus the
-/// implicit-invocation policy (the Codex counterpart to Claude's
-/// `disable-model-invocation`).
-pub fn build_openai_yaml(
-    display_name: &str,
-    description: &str,
-    implicit_allowed: bool,
-) -> crate::Result<String> {
+/// Build the optional Codex `agents/openai.yaml` for a ported skill whose
+/// invocation policy is non-default. Ordinary skills omit this file entirely
+/// to keep large skill-corpus reloads lean.
+pub fn build_openai_yaml(display_name: &str, description: &str) -> crate::Result<String> {
     let mut interface = Mapping::new();
     interface.insert(key("display_name"), Value::String(display_name.to_string()));
     interface.insert(
@@ -147,10 +143,7 @@ pub fn build_openai_yaml(
     );
 
     let mut policy = Mapping::new();
-    policy.insert(
-        key("allow_implicit_invocation"),
-        Value::Bool(implicit_allowed),
-    );
+    policy.insert(key("allow_implicit_invocation"), Value::Bool(false));
 
     let mut root = Mapping::new();
     root.insert(key("interface"), Value::Mapping(interface));
@@ -242,7 +235,7 @@ mod tests {
 
     #[test]
     fn openai_yaml_reflects_policy() {
-        let y = build_openai_yaml("claude-foo", "d", false).unwrap();
+        let y = build_openai_yaml("claude-foo", "d").unwrap();
         assert!(y.contains("allow_implicit_invocation: false"));
         assert!(y.contains("display_name: claude-foo"));
     }

@@ -56,7 +56,9 @@ For every user skill in the source agent (`<config>/skills/<name>/`) it writes a
 mirror into the target agent, translating the frontmatter to the target's
 dialect (Claude `disable-model-invocation` ⇄ Codex
 `agents/openai.yaml: policy.allow_implicit_invocation`) and copying the rest of
-the skill directory verbatim.
+the skill directory verbatim. Codex metadata is sparse by design: ordinary
+skills need only `SKILL.md`; `agents/openai.yaml` is emitted only when it must
+carry a non-default invocation policy.
 
 The sync is safe by construction:
 
@@ -74,6 +76,10 @@ The sync is safe by construction:
 - **Cross-platform.** Config dirs are resolved from `CLAUDE_CONFIG_DIR` /
   `CODEX_HOME` (falling back to `~/.claude` / `~/.codex`, or `%USERPROFILE%` on
   Windows).
+
+After upgrading from `0.1.0`, run the `claude-to-codex` bootstrap once more.
+The `0.1.1` porter re-renders existing mirrors with sparse Codex metadata,
+reducing file-descriptor pressure when Codex reloads a large skill collection.
 
 ## Scope of this release
 

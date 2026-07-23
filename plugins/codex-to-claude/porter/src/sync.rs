@@ -331,17 +331,24 @@ fn write_mirror(
             source_hash,
         );
         fs::write(staging.join("SKILL.md"), frontmatter::render(&fm, body)?)?;
-        if opts.target == Agent::Codex {
+        // `agents/openai.yaml` is optional in Codex. Emit it only when it
+        // carries non-default behavior; writing one for every ordinary skill
+        // doubles the manifest files Codex opens during a hot reload and can
+        // exhaust a low process descriptor limit on a large skill corpus.
+        if opts.target == Agent::Codex && !implicit_allowed {
             let agents_dir = staging.join("agents");
             fs::create_dir_all(&agents_dir)?;
-            let oy = frontmatter::build_openai_yaml(mirror_name, description, implicit_allowed)?;
+            let oy = frontmatter::build_openai_yaml(mirror_name, description)?;
             fs::write(agents_dir.join("openai.yaml"), oy)?;
         }
         // Validate required outputs before we touch the live mirror.
         if !staging.join("SKILL.md").is_file() {
             return Err("staged mirror missing SKILL.md".into());
         }
-        if opts.target == Agent::Codex && !staging.join("agents/openai.yaml").is_file() {
+        if opts.target == Agent::Codex
+            && !implicit_allowed
+            && !staging.join("agents/openai.yaml").is_file()
+        {
             return Err("staged Codex mirror missing agents/openai.yaml".into());
         }
         Ok(())

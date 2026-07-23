@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+#
+# commit-msg hook — Enforces commit message format.
+# Requires a conventional prefix and reasonable length.
+#
+set -euo pipefail
+
+MSG_FILE="$1"
+MSG=$(head -1 "$MSG_FILE")
+
+# Allow merge commits
+if [[ "$MSG" =~ ^Merge ]]; then
+    exit 0
+fi
+
+# Require conventional commit prefix
+PREFIXES="^(feat|fix|docs|refactor|chore|test|ci|style|perf|revert)(\(.+\))?: .+"
+if ! [[ "$MSG" =~ $PREFIXES ]]; then
+    echo "ERROR: Commit message must follow conventional format:"
+    echo ""
+    echo "  feat: add <plugin-name> plugin"
+    echo "  fix(<plugin-name>): correct reference link"
+    echo "  docs: update AGENTS.md practices"
+    echo "  refactor(scripts): extract codex category map"
+    echo "  chore: bump versions"
+    echo ""
+    echo "Prefixes: feat, fix, docs, refactor, chore, test, ci, style, perf, revert"
+    echo "Your message: $MSG"
+    exit 1
+fi
+
+# Warn on long subject lines
+if [[ ${#MSG} -gt 72 ]]; then
+    echo "WARNING: Subject line is ${#MSG} chars (recommended max: 72)"
+fi
+
+exit 0

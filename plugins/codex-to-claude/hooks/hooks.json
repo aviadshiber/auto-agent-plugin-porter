@@ -1,0 +1,16 @@
+{
+  "description": "On session start, mirror OpenAI Codex CLI skills into Claude Code (hash-incremental, loop-safe).",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/porter-sync.sh\" --source codex --target claude",
+            "timeout": 300
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,50 @@
+{
+  "marketplace": {
+    "name": "auto-agent-plugin-porter",
+    "owner": {
+      "name": "Aviad Shiber",
+      "email": "aviad.s@taboola.com"
+    },
+    "description": "Port skills, plugins, and hooks between Claude Code and OpenAI Codex CLI automatically, from a single source of truth, with no double maintenance. Install the porter for your agent and the other agent's skills appear natively on every session start.",
+    "version": "0.1.0",
+    "pluginRoot": "./plugins"
+  },
+  "plugins": [
+    {
+      "name": "codex-to-claude",
+      "version": "0.1.0",
+      "description": "Run INSIDE Claude Code: on every session start, mirror your OpenAI Codex CLI skills into Claude so they work natively — no duplicate authoring. Requires the Rust toolchain (builds a fast porter binary on first run).",
+      "category": "development",
+      "keywords": [
+        "codex",
+        "claude",
+        "porter",
+        "skills",
+        "interop",
+        "session-start-hook"
+      ],
+      "owners": [
+        "aviad.s"
+      ],
+      "claude_only": true
+    },
+    {
+      "name": "claude-to-codex",
+      "version": "0.1.0",
+      "description": "Run INSIDE OpenAI Codex CLI: mirror your Claude Code skills into Codex so they work natively — no duplicate authoring. One-time bootstrap installs a session-start hook (you approve it once); requires the Rust toolchain.",
+      "category": "development",
+      "keywords": [
+        "claude",
+        "codex",
+        "porter",
+        "skills",
+        "interop",
+        "session-start-hook"
+      ],
+      "owners": [
+        "aviad.s"
+      ],
+      "codex_only": true
+    }
+  ]
+}

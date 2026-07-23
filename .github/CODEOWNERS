@@ -1,0 +1,7 @@
+# Code owners for auto-agent-plugin-porter.
+#
+# With branch protection's "Require review from Code Owners" enabled, every PR
+# to the default branch requires an approving review from the owner listed here.
+# This makes @aviadshiber's approval specifically required — a contributor's own
+# approval cannot satisfy the gate.
+*       @aviadshiber

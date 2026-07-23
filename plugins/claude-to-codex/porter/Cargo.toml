@@ -1,0 +1,29 @@
+[package]
+name = "agent-porter"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.74"
+description = "Port skills between Claude Code and OpenAI Codex CLI: hash-incremental, loop-safe, one-way mirror sync run at session start."
+license = "MIT"
+repository = "https://github.com/aviadshiber/auto-agent-plugin-porter"
+
+[[bin]]
+name = "agent-porter"
+path = "src/main.rs"
+
+[lib]
+name = "agent_porter"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+sha2 = "0.10"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+opt-level = 2
+strip = true

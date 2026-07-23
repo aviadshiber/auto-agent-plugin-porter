@@ -1,0 +1,93 @@
+name: CI
+
+# The real server-side merge gate (local git hooks are bypassable and absent
+# for web edits). Runs the marketplace tooling gates AND the Rust porter gates.
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  marketplace:
+    name: Marketplace tooling gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install toolchain deps
+        run: |
+          set -eux
+          sudo apt-get update
+          # git is required by validate.sh's whole-repo secrets scan (git
+          # ls-files); shellcheck + jq back test.sh / validate-json.sh so the
+          # gates cannot silently WARN/SKIP.
+          sudo apt-get install -y --no-install-recommends shellcheck jq git
+          python -m pip install --upgrade pip
+          pip install 'jsonschema>=4.21,<5' 'pytest>=8,<9' 'PyYAML>=6,<7'
+
+      - name: Generate manifests is idempotent (no drift)
+        run: python3 scripts/generate-manifests.py --check
+
+      - name: Vendored porter is in sync (no drift)
+        run: ./scripts/sync-porter.sh --check
+
+      - name: Registry matches schema
+        run: python3 scripts/validate-registry.py
+
+      - name: Instructions pointer (AGENTS.md canonical)
+        run: ./scripts/check-instructions-sync.sh
+
+      - name: validate.sh
+        run: ./scripts/validate.sh
+
+      - name: validate-json.sh
+        run: ./scripts/validate-json.sh
+
+      - name: test.sh
+        run: ./scripts/test.sh
+
+  porter:
+    name: Rust porter (fmt, clippy, test, build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: porter
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ensure rustfmt + clippy components
+        run: rustup component add rustfmt clippy
+
+      - name: Cargo cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            porter/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('porter/Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      - name: Format check
+        run: cargo fmt --check
+
+      - name: Clippy (deny warnings)
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test
+
+      - name: Release build
+        run: cargo build --release

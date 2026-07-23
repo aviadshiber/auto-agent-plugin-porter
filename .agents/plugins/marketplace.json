@@ -1,0 +1,23 @@
+{
+  "name": "auto-agent-plugin-porter",
+  "interface": {
+    "displayName": "auto-agent-plugin-porter"
+  },
+  "plugins": [
+    {
+      "name": "claude-to-codex",
+      "source": {
+        "source": "local",
+        "path": "./plugins/claude-to-codex"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_USE",
+        "products": [
+          "CODEX"
+        ]
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}
